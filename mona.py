@@ -27,12 +27,12 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  
-$Revision: 494 $
-$Id: mona.py 494 2014-04-26 22:06:53Z corelanc0d3r $ 
+$Revision: 540 $
+$Id: mona.py 540 2014-09-23 16:37:33Z corelanc0d3r $ 
 """
 
 __VERSION__ = '2.0'
-__REV__ = filter(str.isdigit, '$Revision: 494 $')
+__REV__ = filter(str.isdigit, '$Revision: 540 $')
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
@@ -96,6 +96,8 @@ from collections import defaultdict, namedtuple
 
 import cProfile
 import pstats
+
+import copy
 
 DESC = "Corelan Team exploit development swiss army knife"
 
@@ -199,6 +201,181 @@ def DwordToBits(srcDword):
 		bit_array.append(int(bit))
 	return bit_array
 
+
+def multiSplit(thisarg,delimchars):
+	""" splits a string into an array, based on provided delimeters"""
+	splitparts = []
+	thispart = ""
+	for c in str(thisarg):
+		if c in delimchars:
+			thispart = thispart.replace(" ","")
+			if thispart != "":
+				splitparts.append(thispart)
+			splitparts.append(c)
+			thispart = ""
+		else:
+			thispart += c
+	if thispart != "":
+		splitparts.append(thispart)
+	return splitparts
+
+
+def getAddyArg(argaddy):
+	"""
+	Tries to extract an address from a specified argument
+	addresses and values will be considered hex
+	(unless you specify 0n before a value)
+	registers are allowed too
+	"""
+	findaddy = 0
+	addyok = True
+	addyparts = []
+	addypartsint = []
+	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
+	regs = dbg.getRegs()
+	thispart = ""
+	for c in str(argaddy):
+		if c in delimchars:
+			thispart = thispart.replace(" ","")
+			if thispart != "":
+				addyparts.append(thispart)
+			addyparts.append(c)
+			thispart = ""
+		else:
+			thispart += c
+	if thispart != "":
+		addyparts.append(thispart)
+
+	for part in addyparts:
+		cleaned = part
+		if not part in delimchars:
+			for x in delimchars:
+				cleaned = cleaned.replace(x,"")	
+			if cleaned.startswith("[") and cleaned.endswith("]"):
+				partval,partok = getIntForPart(cleaned.replace("[","").replace("]",""))
+				if partok:
+					try:
+						partval = struct.unpack('<L',dbg.readMemory(partval,4))[0]
+					except:
+						partval = 0
+						partok = False
+						break
+			else:	
+				partval,partok = getIntForPart(cleaned)
+				if not partok:
+					break
+			addypartsint.append(partval)
+		else:
+			addypartsint.append(part)
+		if not partok:
+			break
+
+	if not partok:
+		addyok = False
+		findval = 0
+	else:
+		calcstr = "".join(str(x) for x in addypartsint)
+		try:
+			findval = eval(calcstr)
+			addyok = True
+		except:
+			findval = 0
+			addyok = False
+
+	return findval, addyok
+	
+
+
+def getIntForPart(part):
+	"""
+	Returns the int value associated with an input string
+	The input string can be a hex value, decimal value, register, modulename, or modulee!functionname
+	"""
+	partclean = part
+	partclean = partclean.upper()
+	addyok = True
+	partval = 0
+	regs = dbg.getRegs()
+	if partclean in regs:
+		partval = regs[partclean]
+	else:
+		if partclean.lower().startswith("0n"):
+			partclean = partclean.lower().replace("0n","")
+			try:
+				partval = int(partclean)
+			except:
+				addyok = False
+				partval = 0
+		else:
+			try:
+				if not "0x" in partclean.lower():
+					partclean = "0x" + partclean
+				partval = int(partclean,16)
+			except:
+				addyok = False
+				partval = 0
+	if not addyok:
+		if not "!" in part:
+			m = getModuleObj(part)
+			if not m == None:
+				partval = m.moduleBase
+				addyok = True
+		else:
+			modparts = part.split("!")
+			modname = modparts[0]
+			funcname = modparts[1]
+			m = getFunctionAddress(modname,funcname)
+			if m > 0:
+				partval = m
+				addyok = True
+	return partval,addyok
+
+
+def getFunctionAddress(modname,funcname):
+	"""
+	Returns the addres of the function inside a given module
+	Relies on EAT data
+	Returns 0 if nothing found
+	"""
+	funcaddy = 0
+	m = getModuleObj(modname)
+	if not m == None:
+		eatlist = m.getEAT()
+		for f in eatlist:
+			if funcname == eatlist[f]:
+				return f
+		for f in eatlist:
+			if funcname.lower() == eatlist[f].lower():
+				return f
+	return funcaddy
+
+def getFunctionName(addy):
+	"""
+	Returns symbol name closest to the specified address
+	Only works in WinDBG
+	Returns function name and optional offset
+	"""
+	fname = ""
+	foffset = ""
+	cmd2run = "ln 0x%08x" % addy
+	output = dbg.nativeCommand(cmd2run)
+	for line in output.split("\n"):
+		if "|" in line:
+			lineparts = line.split(" ")
+			partcnt = 0
+			for p in lineparts:
+				if not p == "":
+					if partcnt == 1:
+						fname = p
+						break
+					partcnt += 1
+	if "+" in fname:
+		fnameparts = fname.split("+")
+		if len(fnameparts) > 1:
+			return fnameparts[0],fnameparts[1]
+	return fname,foffset
+
+
 def printDataArray(data,charsperline=16,prefix=""):
 	maxlen = len(data)
 	charcnt = 0
@@ -291,6 +468,9 @@ def toHexByte(n):
 	A string, representing the value in hex (1 byte)
 	"""
 	return "%02X" % n
+
+def toAsciiOnly(inputstr):
+	return "".join(i for i in inputstr if ord(i)<128 and ord(i) > 31)
 
 def toAscii(n):
 	"""
@@ -628,7 +808,125 @@ def toJavaScript(input):
 	javascriptversion = str2js(allbytes)			
 	return javascriptversion
 	
+
+def getSourceDest(instruction):
+	"""
+	Determines source and destination register for a given instruction
+	"""
+	src = []
+	dst = []
+	srcp = []
+	dstp = []
+	srco = []
+	dsto = []
+	instr = []
+	haveboth = False
+	seensep = False
+	seeninstr = False
+
+	regs = getAllRegs()
+
+	instructionparts = multiSplit(instruction,[" ",","])
 	
+	if "," in instructionparts:
+		haveboth = True
+
+	delkeys = ["DWORD","PTR","BYTE"]
+
+	for d in delkeys:
+		if d in instructionparts:
+			instructionparts.remove(d)
+
+
+	for p in instructionparts:
+
+		regfound = False
+		for r in regs:
+			if r.upper() in p.upper() and not "!" in p and not len(instr) == 0:
+				regfound = True
+				seeninstr = True
+				break
+
+		if not regfound:
+			if not seeninstr and not seensep:
+				instr.append(p) 
+		
+			if "," in p:
+				seensep = True
+		else:
+			for r in regs:
+				if r.upper() in p.upper():
+					if not seensep or not haveboth:
+						dstp.append(p)
+						if not r in dsto:
+							dsto.append(r)
+							break
+					else:
+						srcp.append(p)
+						if not r in srco:
+							srco.append(r)
+							break
+
+	#dbg.log("dst: %s" % dsto)
+	#dbg.log("src: %s" % srco)
+	src = srcp
+	dst = dstp
+	return src,dst
+
+	
+
+def getAllRegs():
+	"""
+	Return an array with all 32bit, 16bit and 8bit registers
+	"""
+	regs = ["EAX","EBX","ECX","EDX","ESP","EBP","ESI","EDI","EIP"]
+	regs.append("AX")
+	regs.append("BX")
+	regs.append("CX")
+	regs.append("DX")
+	regs.append("BP")
+	regs.append("SP")
+	regs.append("SI")
+	regs.append("DI")
+	regs.append("AL")
+	regs.append("AH")
+	regs.append("BL")
+	regs.append("BH")
+	regs.append("CL")
+	regs.append("CH")
+	regs.append("DL")
+	regs.append("DH")
+	return regs
+
+def getSmallerRegs(reg):
+	if reg == "EAX":
+		return ["AX","AL","AH"]
+	if reg == "AX":
+		return ["AL","AH"]
+	if reg == "EBX":
+		return ["BX","BL","BH"]
+	if reg == "BX":
+		return ["BL","BH"]
+	if reg == "ECX":
+		return ["CX","CL","CH"]
+	if reg == "CX":
+		return ["CL","CH"]
+	if reg == "EDX":
+		return ["DX","DL","DH"]
+	if reg == "DX":
+		return ["DL","DH"]
+	if reg == "ESP":
+		return ["SP"]
+	if reg == "EBP":
+		return ["BP"]
+	if reg == "ESI":
+		return ["SI"]
+	if reg == "EDI":
+		return ["DI"]
+
+	return []
+
+
 def isReg(reg):
 	"""
 	Checks if a given string is a valid reg
@@ -1026,18 +1324,40 @@ def getModuleObj(modname):
 	# Method 1
 	mod = dbg.getModule(modname)
 	if mod is not None:
-		return mod
+		return MnModule(modname)
 	# Method 2
-	allmod = dbg.getAllModules()
-	if not modname.endswith(".dll"):
-		modname += ".dll"
-	for tmod in allmod:
-		if tmod.getName() == modname:
-			return tmod
-	# Method 3
-	for tmod in allmod:
-		if tmod.getName().lower() == modname.lower():
-			return tmod
+
+	suffixes = ["",".exe",".dll"]
+	for suf in suffixes:
+		modname_search = modname + suf
+		allmod = dbg.getAllModules()
+		for tmod_s in allmod:
+			tmod = dbg.getModule(tmod_s)
+			if not tmod == None:
+				if tmod.getName() == modname_search:
+					return MnModule(tmod_s)
+				imname = dbg.getImageNameForModule(tmod.getName())
+				if not imname == None:
+					if imname == modname_search:
+						return MnModule(tmod)
+		# Method 3
+		for tmod_s in allmod:
+			tmod = dbg.getModule(tmod_s)
+			if not tmod == None:
+				if tmod.getName().lower() == modname_search.lower():
+					return MnModule(tmod_s)
+				imname = dbg.getImageNameForModule(tmod.getName().lower())
+				if not imname == None:
+					if imname.lower() == modname_search.lower():
+						return MnModule(tmod)
+
+		# Method 4
+		for tmod_s in allmod:
+			tmod = dbg.getModule(tmod_s)
+			if not tmod == None:
+				if tmod_s.lower() == modname_search.lower():
+					return MnModule(tmod_s)
+		
 	return None
 	
 		
@@ -1151,6 +1471,23 @@ def haveRepetition(string, pos):
 		if count >= MIN_REPETITION:
 			return True
 	return False
+
+
+def findAllPaths(graph,start_vertex,end_vertex,path=[]):
+	path = path + [start_vertex]
+	if start_vertex == end_vertex:
+		return [path]
+	if start_vertex not in graph:
+		return []
+	paths = []
+	for vertex in graph[start_vertex]:
+		if vertex not in path:
+			extended_paths = findAllPaths(graph,vertex,end_vertex,path)
+			for p in extended_paths:
+				paths.append(p)
+	return paths
+
+
 
 def isAsciiString(data):
 	"""
@@ -2022,7 +2359,40 @@ class MnLog:
 			pass
 		return True
 	
-	
+
+#---------------------------------------#
+#  Simple Queue class                   #
+#---------------------------------------#
+class MnQueue:
+	"""
+	Simple queue class
+	"""
+	def __init__(self):
+		self.holder = []
+		
+	def enqueue(self,val):
+		self.holder.append(val)
+		
+	def dequeue(self):
+		val = None
+		try:
+			val = self.holder[0]
+			if len(self.holder) == 1:
+				self.holder = []
+			else:
+				self.holder = self.holder[1:]	
+		except:
+			pass
+			
+		return val	
+		
+	def IsEmpty(self):
+		result = False
+		if len(self.holder) == 0:
+			result = True
+		return result	
+
+
 #---------------------------------------#
 #  Class to access module properties    #
 #---------------------------------------#
@@ -3216,6 +3586,12 @@ class MnChunk:
 		chunkshown = False
 		if self.chunktype == "chunk":
 			dbg.log("    _HEAP @ %08x, Segment @ %08x" % (self.heapbase,self.segmentbase))
+			if win7mode:
+				iHeap = MnHeap(self.heapbase)
+				if iHeap.usesLFH():
+					dbg.log("    Heap has LFH enabled. LFH Heap starts at 0x%08x" % iHeap.getLFHAddress())
+					if "busy" in self.flagtxt.lower() and "internal" in self.flagtxt.lower() and self.usersize > 0x1ff0:
+						dbg.log("    This chunk may be managed by LFH")
 			dbg.log("                      (         bytes        )                   (bytes)")						
 			dbg.log("      HEAP_ENTRY      Size  PrevSize    Unused Flags    UserPtr  UserSize Remaining - state")
 			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*8,self.prevsize*8,self.unused,self.flag,self.userptr,self.usersize,self.unused-self.headersize,self.flagtxt))
@@ -3955,12 +4331,14 @@ class MnPointer:
 		silent = False
 		return funcinfo
 
-	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0):
+	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile=""):
 		dumpdata = {}
 		origdumpdata = {} 
 		if __DEBUGGERAPP__ == "WinDBG":
 			addy = self.address
 			if not silent:
+				dbg.log("")
+				dbg.log("----------------------------------------------------")
 				dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes" % (addy,size))
 				if levels > 0:
 					dbg.log("[+] Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
@@ -3968,9 +4346,15 @@ class MnPointer:
 
 			parentlist = []
 			levelcnt = 0
-			logfile = MnLog("dumpobj.txt")
-			thislog = logfile.reset()
+			if customthislog == "" and customlogfile == "":
+				logfile = MnLog("dumpobj.txt")
+				thislog = logfile.reset()
+			else:
+				logfile = customlogfile
+				thislog = customthislog
 			addys = [addy]
+			parent = ""
+			parentdata = {}
 			while levelcnt <= levels:
 				thisleveladdys = []
 				for addy in addys:
@@ -3993,12 +4377,19 @@ class MnPointer:
 							else:
 								info = ["",symbol,"",content]
 								dumpdata[hexStrToInt(loc)] = info
-					self.printObjDump(dumpdata,logfile,thislog)
+					if addy in parentdata:
+						pdata = parentdata[addy]
+						parent = "Referenced at 0x%08x (object 0x%08x, offset +0x%02x)" % (pdata[0],pdata[1],pdata[0]-pdata[1])
+					else:
+						parent = ""
+					self.printObjDump(dumpdata,logfile,thislog,size,parent)
+
 					for loc in dumpdata:
 						thisdata = dumpdata[loc]
 						if thisdata[0] == "ptr_obj":
 							thisptr = int(thisdata[3],16)
 							thisleveladdys.append(thisptr)
+							parentdata[thisptr] = [loc,addy]
 					if levelcnt == 0:
 						origdumpdata = dumpdata
 					dumpdata = {}
@@ -4008,7 +4399,8 @@ class MnPointer:
 		dumpdata = origdumpdata
 		return dumpdata
 
-	def printObjDump(self,dumpdata,logfile,thislog):
+
+	def printObjDump(self,dumpdata,logfile,thislog,size=0,parent=""):
 		# dictionary, key = address
 		# 0 = type
 		# 1 = content info
@@ -4017,12 +4409,28 @@ class MnPointer:
 		sortedkeys = sorted(dumpdata)
 		if len(sortedkeys) > 0:
 			startaddy = sortedkeys[0]
-			line = ">> Object at 0x%08x:" % startaddy
+			sizem = ""
+			parentinfo = ""
+			if size > 0:
+				sizem = " (0x%02x bytes)" % size
+			logfile.write("",thislog)
+
+			if parent == "":
+				logfile.write("=" * 60,thislog)
+
+			line = ">> Object at 0x%08x%s:" % (startaddy,sizem)
 			if not silent:
 				dbg.log("")
 				dbg.log(line)
-			logfile.write("",thislog)
+			
 			logfile.write(line,thislog)
+
+			if parent != "":
+				line = "   %s" % parent
+				if not silent:
+					dbg.log(line)
+				logfile.write(line,thislog)
+
 			line = "Offset  Address      Contents    Info"
 			logfile.write(line,thislog)
 			if not silent:
@@ -4040,7 +4448,7 @@ class MnPointer:
 					content = ""
 					if len(info) > 3:
 						content = info[3]
-					contentinfo = info[1]  
+					contentinfo = toAsciiOnly(info[1])
 					offsetstr = toSize("%02x" % offset,4)
 					line = "+%s   0x%08x | 0x%s  %s" % (offsetstr,loc,content,contentinfo)
 					if not silent:
@@ -4080,7 +4488,7 @@ class MnPointer:
 				ptraddy = outputlines[0][10:18]
 				ptrinfo = outputlines[0][19:]
 				if ptrinfo.replace(" ","") != "":
-					if "vftable" in ptrinfo:
+					if "vftable" in ptrinfo or "Heap" in memloc:
 						locinfo = ["ptr_obj","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
 					else:
 						locinfo = ["ptr","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
@@ -4092,7 +4500,10 @@ class MnPointer:
 			try:
 				strdata = dbg.readString(addy)
 				if len(strdata) > 2:
-					locinfo = ["ptr_str","%sptr to ASCII '%s'" % (extra,strdata),"ascii"]
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (extra,len(strdata),datastr),"ascii"]
 					return locinfo
 			except:
 				pass
@@ -4101,7 +4512,10 @@ class MnPointer:
 			try:
 				strdata = dbg.readWString(addy)
 				if len(strdata) > 2:
-					locinfo = ["ptr_str","%sptr to UNICODE '%s'" % (extra,strdata),"unicode"]
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (extra,len(strdata),datastr),"unicode"]
 					return locinfo
 			except:
 				pass
@@ -4111,6 +4525,35 @@ class MnPointer:
 			if not ptrf == "":
 				locinfo = ["ptr_func","%sptr to %s" % (extra,ptrf),str(addy)]
 				return locinfo
+
+
+			# BSTR Unicode ?
+			try:
+				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
+				strdata = dbg.readWString(addy+4)
+				if len(strdata) > 2 and (bstr == len(strdata)+1):
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (extra,bstr,datastr),"unicode"]
+					return locinfo
+			except:
+				pass
+
+
+			# pointer to a BSTR ASCII?
+			try:
+				strdata = dbg.readString(addy+4)
+				if len(strdata) > 2 and (bstr == len(strdata)/2):
+					datastr = strdata
+					if len(strdata) > 80:
+						datastr = strdata[0:80] + "..."
+					locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (extra,bstr,datastr),"ascii"]
+					return locinfo
+			except:
+				pass
+
+
 
 		# pointer itself is a string ?
 		
@@ -4128,6 +4571,15 @@ class MnPointer:
 			if ptrstr.replace(" ","") != "" and not toHexByte(b1) == "00" and not toHexByte(b2) == "00" and not toHexByte(b3) == "00" and not toHexByte(b4) == "00":
 				locinfo = ["str","= ASCII '%s' %s" % (ptrstr,extra),"ascii"]
 				return locinfo
+
+		# pointer to heap ?
+		if "Heap" in memloc:
+			if not "??" in outputlines[0]:
+				ismapped = True
+				ptraddy = outputlines[0][10:18]
+				locinfo = ["ptr_obj","%sptr to 0x%08x" % (extra,hexStrToInt(ptraddy)),str(addy)]
+				return locinfo
+
 		# nothing special to report
 		return ["","",""]
 
@@ -7004,7 +7456,7 @@ def compareFileWithMemory(filename,startpos,skipmodules=False):
 					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
 						locations.append(ptr)
 		else:
-			startpos_fixed = hexStrToInt(startpos)
+			startpos_fixed = startpos
 			locations.append(startpos_fixed)
 		if len(locations) > 0:
 			dbg.log("    - Comparing %d location(s)" % (len(locations)))
@@ -7492,7 +7944,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		
 		movetolast = []
 		regsequences = []
-		
+		stepcnt = 1
 		for step in routinedefs[routine]:
 			thisreg = step[0]
 			thistarget = step[1]
@@ -7500,6 +7952,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
+			dbg.log("    Step %d/%d: %s" % (stepcnt,len(routinedefs[routine]),thisreg))
+			stepcnt += 1
+
 			if not thisreg in skiplist:
 			
 				regsequences.append(thisreg)
@@ -7508,7 +7963,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 				# replacelist and skiplist arrays
 				if str(thistarget) == "api":
 					objprogressfile.write("  * Enumerating ROPFunc info",progressfile)
-					dbg.log("    Enumerating ROPFunc info")
+					#dbg.log("    Enumerating ROPFunc info")
 					# routine to put api pointer in thisreg
 					funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat")
 					if routine == "SetProcessDEPPolicy" and funcptr == 0:
@@ -10306,6 +10761,9 @@ def main(args):
 		def procHelp(args):
 			dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
 			dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
+			if __DEBUGGERAPP__ == "WinDBG":
+				pykdversion = dbg.getPyKDVersionNr()
+				dbg.log("     PyKD version %s" % pykdversion)
 			dbg.log("     Written by Corelan - https://www.corelan.be")
 			dbg.log("     Project page : https://redmine.corelan.be/projects/mona")
 			dbg.logLines(getBanner(),highlight=1)
@@ -10960,15 +11418,14 @@ def main(args):
 					patterntype = "str"
 			
 			if "b" in args:
-				try:
-					base = int(args["b"],16)
-				except:
+				base,addyok = getAddyArg(args["b"])
+				if not addyok:
 					dbg.log("invalid base address: %s" % args["b"],highlight=1)
 					return
+
 			if "t" in args:
-				try:
-					top = int(args["t"],16)
-				except:
+				top,addyok = getAddyArg(args["t"])
+				if not addyok:
 					dbg.log("invalid top address: %s" % args["t"],highlight=1)
 					return
 					
@@ -11045,18 +11502,11 @@ def main(args):
 				dbg.log("Missing mandatory argument -a", highlight=1)
 				return
 			
-			args["a"] = args["a"].replace("0x","").replace("0X","")
-			targetaddy = args["a"]
-			# maybe arg is a register
-			allregs = dbg.getRegs()
-			if str(targetaddy).upper() in allregs:
-				targetaddy = "%08x" % allregs[str(targetaddy.upper())]
-
-			if not isAddress(targetaddy):
-				dbg.log("%s is not a valid address" % args["a"], highlight=1)
+			address,addyok = getAddyArg(args["a"])
+			if not addyok:
+				dbg.log("%s is an invalid address" % args["a"], highlight=1)
 				return
 			
-			address = addrToInt(targetaddy)
 			ptr = MnPointer(address)
 			modname = ptr.belongsTo()
 			modinfo = None
@@ -11081,6 +11531,10 @@ def main(args):
 				dbg.log("    Section : %s" % section)
 			if rva != 0:
 				dbg.log("    Offset from module base: 0x%x" % rva)
+				if modinfo:
+					eatlist = modinfo.getEAT()
+					if address in eatlist:
+						dbg.log("    Address is start of function %s in %s" % (eatlist[address],modname))
 			if ptr.isOnStack():
 				stacks = getStacks()
 				stackref = ""
@@ -11169,19 +11623,10 @@ def main(args):
 				dbg.log("You must specify a valid filename using parameter -f", highlight=1)
 				return
 			if "a" in args:
-				uppera = args["a"].upper()
-				if uppera in allregs:
-					startpos = "0x%08x" % allregs[uppera]
-					dbg.log(startpos)
-				else:
-					addy = args["a"]
-					if addy.upper().startswith("0X"):
-						addy = addy[2:]
-					if not isAddress(addy):
-						dbg.log("%s is an invalid address" % args["a"], highlight=1)
-						return
-					else:
-						startpos = args["a"]
+				startpos,addyok = getAddyArg(args["a"])
+				if not addyok:
+					dbg.log("%s is an invalid address" % args["a"], highlight=1)
+					return
 			if "s" in args:
 				skipmodules = True
 			compareFileWithMemory(filename,startpos,skipmodules)
@@ -11202,33 +11647,18 @@ def main(args):
 				dbg.log("Missing mandatory argument -a2 <address>", highlight=1)
 				return		
 			a2 = args["a2"]
-			
-			for reg in regs:
-				if reg.upper() == a1.upper():
-					a1=toHex(regs[reg])					
-					isReg_a1 = True
-					extratext1 = " [" + reg.upper() + "] " 
-					break
-			a1 = a1.upper().replace("0X","").lower()
-				
-			if not isAddress(str(a1)):
-				dbg.log("%s is not a valid address" % str(a1), highlight=1)
+
+
+			a1,addyok = getAddyArg(args["a1"])
+			if not addyok:			
+				dbg.log("0x%08x is not a valid address" % a1, highlight=1)
 				return
-			for reg in regs:
-				if reg.upper() == a2.upper():
-					a2=toHex(regs[reg])					
-					isReg_a2 = True
-					extratext2 = " [" + reg.upper() + "] " 					
-					break
-			a2 = a2.upper().replace("0X","").lower()
-			
-			if not isAddress(str(a2)):
-				dbg.log("%s is not a valid address" % str(a2), highlight=1)
+
+			a2,addyok = getAddyArg(args["a2"])
+			if not addyok:			
+				dbg.log("0x%08x is not a valid address" % a2, highlight=1)
 				return
-				
-			a1 = hexStrToInt(a1)
-			a2 = hexStrToInt(a2)
-			
+
 			diff = a2 - a1
 			result=toHex(diff)
 			negjmpbytes = ""
@@ -11237,11 +11667,12 @@ def main(args):
 				result=toHex(4294967296-ndiff) 
 				negjmpbytes="\\x"+ result[6]+result[7]+"\\x"+result[4]+result[5]+"\\x"+result[2]+result[3]+"\\x"+result[0]+result[1]
 				regaction="sub"
-			dbg.log("Offset from 0x%08x%s to 0x%08x%s : %d (0x%s) bytes" % (a1,extratext1,a2,extratext2,diff,result))	
+			dbg.log("Offset from 0x%08x to 0x%08x : %d (0x%s) bytes" % (a1,a2,diff,result))	
 			if a1 > a2:
 				dbg.log("Negative jmp offset : %s" % negjmpbytes)
 			else:
-				dbg.log("Jmp offset : %s" % negjmpbytes)				
+				dbg.log("Jmp offset : %s" % negjmpbytes)		
+			return		
 				
 		# ----- bp: Set a breakpoint on read/write/exe access ----- #
 		def procBp(args):
@@ -12088,6 +12519,8 @@ def main(args):
 			filename = ""
 			egg = "w00t"
 			usechecksum = False
+			usewow64 = False
+			useboth = False
 			egg_size = 0
 			checksumbyte = ""
 			extratext = ""
@@ -12105,6 +12538,14 @@ def main(args):
 			if "t" in args:
 				if type(args["t"]).__name__.lower() != "bool":
 					egg = args["t"]
+
+			if "wow64" in args:
+				usewow64 = True
+
+
+			# placeholder for later
+			if "both" in args:
+				useboth = True
 
 			if len(egg) != 4:
 				egg = 'w00t'
@@ -12201,26 +12642,60 @@ def main(args):
 					
 			#let's start		
 			egghunter = ""
-			
-			#Basic version of egghunter
-			dbg.log("[+] Generating egghunter code")
-			egghunter += (
-				"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
-				"\x42"+					#INC EDX
-				"\x52"					#push edx
-				"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
-				"\x58"					#pop eax
-				"\xcd\x2e"				#int 0x2e 
-				"\x3c\x05"				#cmp al,5
-				"\x5a"					#pop edx
-				"\x74\xef"				#je "or dx,0xfff"
-				"\xb8"+egg+				#mov eax, egg
-				"\x8b\xfa"				#mov edi,edx
-				"\xaf"					#scasd
-				"\x75\xea"				#jne "inc edx"
-				"\xaf"					#scasd
-				"\x75\xe7"				#jne "inc edx"
-			)
+
+			if not usewow64:
+				#Basic version of egghunter
+				dbg.log("[+] Generating traditional 32bit egghunter code")
+				egghunter = ""
+				egghunter += (
+					"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
+					"\x42"+					#INC EDX
+					"\x52"					#push edx
+					"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
+					"\x58"					#pop eax
+					"\xcd\x2e"				#int 0x2e 
+					"\x3c\x05"				#cmp al,5
+					"\x5a"					#pop edx
+					"\x74\xef"				#je "or dx,0xfff"
+					"\xb8"+egg+				#mov eax, egg
+					"\x8b\xfa"				#mov edi,edx
+					"\xaf"					#scasd
+					"\x75\xea"				#jne "inc edx"
+					"\xaf"					#scasd
+					"\x75\xe7"				#jne "inc edx"
+				)
+
+			if usewow64:
+				egghunter = ""
+				egghunter += (
+					# 64 stub needed before loop
+					"\x31\xdb"                                      #xor ebx,ebx
+					"\x53"                                          #push ebx
+					"\x53"                                          #push ebx
+					"\x53"                                          #push ebx
+					"\x53"                                          #push ebx
+					"\xb3\xc0"                                      #mov bl,0xc0
+	
+					# 64 Loop
+					"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
+					"\x42"                                          #INC EDX
+					"\x52"                                          #PUSH EDX
+					"\x6A\x26"                                      #PUSH 26 
+					"\x58"                                          #POP EAX
+					"\x33\xC9"                                      #XOR ECX,ECX
+					"\x8B\xD4"                                      #MOV EDX,ESP
+					"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
+					"\x5e"                                          #POP ESI
+					"\x5a"                                          #POP EDX
+					"\x3C\x05"                                      #CMP AL,5
+					"\x74\xe9"                                      #JE SHORT
+					"\xB8"+egg+                                     #MOV EAX,74303077 w00t
+					"\x8B\xFA"                                      #MOV EDI,EDX
+					"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+					"\x75\xe4"                                      #JNZ "inc edx"
+					"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+					"\x75\xe1"                                      #JNZ "inc edx"
+ 				)
 			
 			if usechecksum:
 				dbg.log("[+] Generating checksum routine")
@@ -12989,9 +13464,15 @@ def main(args):
 					segmentinfo = segmentinfo.strip(",")
 					segmentinfo = " : " + segmentinfo
 					defheap = ""
+					lfhheap = ""
 					if heap == getDefaultProcessHeap():
 						defheap = "* Default process heap"
-					dbg.log("0x%08x (%d segment(s)%s) %s" % (heap,len(segments),segmentinfo,defheap))
+					if win7mode:
+						iHeap = MnHeap(heap)
+						if iHeap.usesLFH():
+							lfhheapaddress = iHeap.getLFHAddress()
+							lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
+					dbg.log("0x%08x (%d segment(s)%s) %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap))
 			else:
 				dbg.log(" ** No heaps found")
 			dbg.log("")
@@ -13174,7 +13655,7 @@ def main(args):
 
 					if searchtype == "lfh" or (searchtype == "all" and win7mode):
 						dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
-						dbg.log("     ** Not implemented yet, stay tuned **")
+						dbg.log("     ** Not implemented yet **")
 						
 					if searchtype == "freelist" or (searchtype == "all" and not win7mode):
 						flindex = 0
@@ -13950,6 +14431,8 @@ def main(args):
 			criteria = {}
 
 			thisxat = {}
+
+			entriesfound = 0
 			
 			if "s" in args:
 				if type(args["s"]).__name__.lower() != "bool":
@@ -14022,13 +14505,18 @@ def main(args):
 						else:
 							addtolist = True
 						if addtolist:
+							entriesfound += 1
 							if mode == "iat":
 								thedelta = thisfunc - thismod.moduleBase
 								logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s)" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname)
 							else:
-								logentry = "0x%08x : %s!%s" % (thisfunc,thismodule.lower(),origfuncname)
+								thedelta = thisfunc - thismod.moduleBase
+								logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule.lower(),origfuncname,thismod.moduleBase,thedelta)
 							dbg.log(logentry,address = thisfunc)
 							objxatfilename.write(logentry,xatfile)
+				if not silent:
+					dbg.log("")
+					dbg.log("%d entries found" % entriesfound)
 			return
 
 			
@@ -14447,12 +14935,8 @@ def main(args):
 			silent = True
 			findaddy = 0
 			if "a" in args:
-				findaddy = args["a"]
-				try:
-					if not "0x" in findaddy.lower():
-						findaddy = "0x" + findaddy
-					findaddy = int(findaddy,16)
-				except:
+				findaddy,addyok = getAddyArg(args["a"])
+				if not addyok:
 					dbg.log("%s is an invalid address" % args["a"], highlight=1)
 					return
 			if findaddy > 0:
@@ -15187,7 +15671,7 @@ def main(args):
 						ptr = MnPointer(sehandler)
 						funcinfo = ptr.getPtrFunction()
 					else:
-						funcinfo = "(corrupted record)"
+						funcinfo = " (corrupted record)"
 						if str(nseh).startswith("0x"):
 							nseh = "0x%08x" % int(nseh,16)
 						else:
@@ -15195,9 +15679,11 @@ def main(args):
 					if len(overwritedata) > 0:
 						handlersoverwritten[address] = overwritedata
 						smashoffset = int(overwritedata[1])
-						if not overwritedata[0] == "unicode":
+						typeinfo = ""
+						if overwritedata[0] == "unicode":
 							smashoffset += 2
-						overwritemark = " (record smashed at offset %d)" % smashoffset
+							typeinfo = " [unicode]"
+						overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
 						
 					dbg.log("0x%08x  %s  0x%08x %s%s" % (address,nseh,sehandler,funcinfo, overwritemark))
 			if len(handlersoverwritten) > 0:
@@ -15208,9 +15694,115 @@ def main(args):
 					overwrittentype = overwrittendata[0]
 					overwrittenoffset = int(overwrittendata[1])
 					if not overwrittentype == "unicode":
-						dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset+2))
+						dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
 					else:
+						overwrittenoffset += 2
 						dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
+			return
+
+
+		def procDumpLog(args):
+			logfile = ""
+			levels = 0
+			nestedsize = 0x28
+
+			if "f" in args:
+				if type(args["f"]).__name__.lower() != "bool":
+					logfile = args["f"]
+
+			if "l" in args:
+				if type(args["l"]).__name__.lower() != "bool":
+					if str(args["l"]).lower().startswith("0x"):
+						try:
+							levels = int(args["l"],16)
+						except:
+							levels = 0
+					else:
+						try:
+							levels = int(args["l"])
+						except:
+							levels = 0
+
+			if "m" in args:
+				if type(args["m"]).__name__.lower() != "bool":
+					if str(args["m"]).lower().startswith("0x"):
+						try:
+							nestedsize = int(args["m"],16)
+						except:
+							nestedsize = 0x28
+					else:
+						try:
+							nestedsize = int(args["m"])
+						except:
+							nestedsize = 0x28					
+
+			if logfile == "":
+				dbg.log(" *** Error: please specify a valid logfile with argument -f ***",highlight=1)
+				return
+
+			allocs = 0
+			frees = 0
+			# open logfile and record all objects & sizes
+			logdata = {}
+			try:
+				dbg.log("[+] Parsing logfile %s" % logfile)
+				f = open(logfile,"rb")
+				contents = f.readlines()
+				f.close()
+
+				for tline in contents:
+					line = str(tline)
+					if line.startswith("alloc("):
+						size = ""
+						addy = ""
+						lineparts = line.split("(")
+						if len(lineparts) > 1:
+							sizeparts = lineparts[1].split(")")
+							size = sizeparts[0].replace(" ","")
+						lineparts = line.split("=")
+						if len(lineparts) > 1:
+							linepartaddy = lineparts[1].split(" ")
+							for lpa in linepartaddy:
+								if addy != "":
+									break
+								if lpa != "":
+									addy = lpa 
+						if size != "" and addy != "":
+							size = size.lower()
+							addy = addy.lower()
+							if not addy in logdata:
+								logdata[addy] = size
+							allocs += 1
+
+					if line.startswith("free("):
+						addy = ""
+						lineparts = line.split("(")
+						if len(lineparts) > 1:
+							addyparts = lineparts[1].split(")")
+							addy = addyparts[0].replace(" ","")
+						if addy != "":
+							addy = addy.lower()
+							if addy in logdata:
+								del logdata[addy]
+							frees += 1			
+
+				dbg.log("[+] Logfile parsed, %d objects found" % len(logdata))
+				dbg.log("    Total allocs: %d, total free: %d" % (allocs,frees))
+				dbg.log("[+] Dumping objects")
+				logfile = MnLog("dump_alloc_free.txt")
+				thislog = logfile.reset()
+				for addy in logdata:
+					asize = logdata[addy]
+					ptrx = MnPointer(int(addy,16))
+					size = int(asize,16)
+					dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize,thislog,logfile)
+
+			except:
+				dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
+				dbg.log(traceback.format_exc())
+				return
+
+
 			return
 
 
@@ -15222,12 +15814,7 @@ def main(args):
 			regs = dbg.getRegs()
 			if "a" in args:
 				if type(args["a"]).__name__.lower() != "bool":
-					try:
-						addy = int(args["a"],16)
-					except:
-						addy = 0
-					if addy == 0 and args["a"].upper() in regs:
-						addy = regs[args["a"].upper()]
+					addy,addyok = getAddyArg(args["a"])
 
 			if "s" in args:
 				if type(args["s"]).__name__.lower() != "bool":
@@ -15317,23 +15904,11 @@ def main(args):
 			regs = dbg.getRegs()
 			if "src" in args:
 				if type(args["src"]).__name__.lower() != "bool":
-					try:
-						src = int(args["src"],16)
-					except:
-						src = 0
-
-					if src == 0 and args["src"].upper() in regs:
-						src = regs[args["src"].upper()]
+					src,addyok = getAddyArg(args["src"])
 
 			if "dst" in args:
 				if type(args["dst"]).__name__.lower() != "bool":
-					try:
-						dst = int(args["dst"],16)
-					except:
-						dst = 0
-
-					if dst == 0 and args["dst"].upper() in regs:
-						dst = regs[args["dst"].upper()]
+					dst,addyok = getAddyArg(args["dst"])
 
 			if "n" in args:
 				if type(args["n"]).__name__.lower() != "bool":
@@ -15388,10 +15963,7 @@ def main(args):
 
 			if "a" in args:
 				if type(args["a"]).__name__.lower() != "bool":
-					try:
-						address = int(args["a"],16)
-					except:
-						address = 0
+					address,addyok = getAddyArg(args["a"])
 			else:
 				address = regs["EIP"]
 				if leaks:
@@ -15923,6 +16495,366 @@ def main(args):
 			return
 
 
+		def procFlow(args):
+
+			srplist = []
+			endlist = []
+			cregs = []
+			cregsc = []
+			endloc = 0
+			rellist = {}
+			funcnamecache = {}
+			branchstarts = {}
+			maxinstr = 60
+			maxcalllevel = 3
+			callskip = 0
+			instrcnt = 0
+			regs = dbg.getRegs()
+			aregs = getAllRegs()
+			addy = regs["EIP"]
+			addyerror = False
+			eaddy = 0
+			showfuncposition = False
+
+			if "cl" in args:
+				if type(args["cl"]).__name__.lower() != "bool":
+					try:
+						maxcalllevel = int(args["cl"])
+					except:
+						pass
+
+			if "cs" in args:
+				if type(args["cs"]).__name__.lower() != "bool":
+					try:
+						callskip = int(args["cs"])
+					except:
+						pass				
+
+			if "cr" in args:
+				if type(args["cr"]).__name__.lower() != "bool":
+					crdata = args["cr"]
+					crdata = crdata.replace("'","").replace('"',"").replace(" ","")
+					crlist = crdata.split(",")
+					for c in crlist:
+						c1 = c.upper()
+						if c1 in aregs:
+							cregs.append(c1)
+							csmall = getSmallerRegs(c1)
+							for cs in csmall:
+								cregs.append(cs)
+
+			if "crc" in args:
+				if type(args["crc"]).__name__.lower() != "bool":
+					crdata = args["crc"]
+					crdata = crdata.replace("'","").replace('"',"").replace(" ","")
+					crlist = crdata.split(",")
+					for c in crlist:
+						c1 = c.upper()
+						if c1 in aregs:
+							cregsc.append(c1)
+							csmall = getSmallerRegs(c1)
+							for cs in csmall:
+								cregsc.append(cs)
+
+			cregs = list(set(cregs))
+			cregsc = list(set(cregsc))
+
+			if "n" in args:
+				if type(args["n"]).__name__.lower() != "bool":
+					try:
+						maxinstr = int(args["n"])
+					except:
+						pass	
+
+			if "func" in args:
+				showfuncposition = True
+
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:		
+						dbg.log(" ** Please provide a valid start location with argument -a **")
+						return
+
+			if "e" in args:
+				if type(args["e"]).__name__.lower() != "bool":
+					eaddy,eaddyok = getAddyArg(args["e"])
+					if not eaddyok:
+						dbg.log(" ** Please provide a valid end location with argument -e **")
+						return										
+
+
+			dbg.log("[+] Max nr of instructions per branch: %d" % maxinstr)
+			dbg.log("[+] Maximum CALL level: %d" % maxcalllevel)
+			if callskip > 0:
+				dbg.log("[+] Skipping details of the first %d child functions" % callskip)
+			if eaddy > 0:
+				dbg.log("[+] Searching all possible paths between 0x%08x and 0x%08x" % (addy,eaddy))
+			else:
+				dbg.log("[+] Searching all possible paths from 0x%08x" % (addy))
+			if len(cregs) > 0:
+				dbg.log("[+] Controlled registers: %s" % cregs)
+			if len(cregsc) > 0:
+				dbg.log("[+] Controlled register contents: %s" % cregsc)
+
+			# first, get SRPs at this point
+			if addy == regs["EIP"]:
+				cmd2run = "k"
+				srpdata = dbg.nativeCommand(cmd2run)
+				for line in srpdata.split("\n"):
+					linedata = line.split(" ")
+					if len(linedata) > 1:
+						childebp = linedata[0]
+						srp = linedata[1]
+						if isAddress(childebp) and isAddress(srp):
+							srplist.append(hexStrToInt(srp))
+
+			branchstarts[addy] = [0,srplist,0]
+			curlocs = [addy]
+
+			# create relations
+			while len(curlocs) > 0:
+				curloc = curlocs.pop(0)
+				callcnt = 0
+				#dbg.log("New start location: 0x%08x" % curloc)
+				prevloc = curloc
+				instrcnt = branchstarts[curloc][0]
+				srplist = branchstarts[curloc][1]
+				currcalllevel = branchstarts[curloc][2]
+				while instrcnt < maxinstr:
+					beforeloc = prevloc
+					prevloc = curloc
+					try:
+						thisopcode = dbg.disasm(curloc)
+						instruction = thisopcode.getDisasm()				
+						instructionbytes = thisopcode.getBytes()
+						instructionsize = thisopcode.opsize
+						opupper = instruction.upper()
+						if opupper.startswith("RET"): 
+							if currcalllevel > 0:
+								currcalllevel -= 1
+							if len(srplist) > 0:
+								newloc = srplist.pop(0)
+								rellist[curloc] = [newloc]
+								curloc = newloc
+							else:
+								break
+						elif opupper.startswith("JMP"):
+							if "(" in opupper and ")" in opupper:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										rellist[curloc] = [newloc]
+										curloc = newloc
+						elif opupper.startswith("J"):
+							if "(" in opupper and ")" in opupper:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										if not newloc in curlocs:
+											curlocs.append(newloc)
+										branchstarts[newloc] = [instrcnt,srplist,currcalllevel]
+										newloc2 = prevloc + instructionsize
+										rellist[curloc] = [newloc,newloc2]
+										curloc = newloc2
+										#dbg.log("    Added 0x%08x as alternative branch start" % newloc)
+						elif opupper.startswith("CALL"):
+							
+							if ("(" in opupper and ")" in opupper) and currcalllevel < maxcalllevel and callcnt > callskip:
+								ipartsa = opupper.split(")")
+								ipartsb = ipartsa[0].split("(")
+								if len(ipartsb) > 0:
+									jmptarget = ipartsb[1]
+									if isAddress(jmptarget):
+										newloc = hexStrToInt(jmptarget)
+										rellist[curloc] = [newloc]
+										curloc = newloc
+								newretptr = prevloc + instructionsize
+								srplist.insert(0,newretptr)
+								currcalllevel += 1
+							else:
+								# don't show the function details, simply continue after the call
+								newloc = curloc+instructionsize
+								rellist[curloc] = [newloc]
+								curloc = newloc
+							callcnt += 1
+						else:
+							curloc += instructionsize
+							rellist[prevloc] = [curloc]
+					except:
+						#dbg.log("Unable to disasm at 0x%08x, past: 0x%08x" % (curloc,beforeloc))
+						if not beforeloc in endlist:
+							endlist.append(beforeloc)
+						instrcnt = maxinstr
+						break
+					#dbg.log("%d 0x%08x : %s  -> 0x%08x" % (instrcnt,prevloc,instruction,curloc))
+					instrcnt += 1
+				if not curloc in endlist:
+					endlist.append(curloc)
+
+			dbg.log("[+] Found total of %d possible flows" % len(endlist))
+
+			if eaddy > 0:
+				if eaddy in rellist:
+					endlist = [eaddy]
+					dbg.log("[+] Limit flows to cases that contain 0x%08x" % eaddy)
+				else:
+					dbg.log(" ** Unable to reach 0x%08x ** " % eaddy)
+					dbg.log("    Try increasing max nr of instructions with parameter -n")
+					return
+
+			filename = "flows.txt"
+			logfile = MnLog(filename)
+			thislog = logfile.reset()
+
+			dbg.log("[+] Processing %d endings" % len(endlist))
+			endingcnt = 1
+			processedresults = []
+			for endaddy in endlist:
+				dbg.log("[+] Creating all paths between 0x%08x and 0x%08x" % (addy,endaddy))
+				allpaths = findAllPaths(rellist,addy,endaddy)
+				if len(allpaths) == 0:
+					#dbg.log("    *** No paths from 0x%08x to 0x%08x *** " % (addy,endaddy))
+					continue
+
+				dbg.log("[+] Ending: 0x%08x (%d/%d), %d paths" % (endaddy,endingcnt,len(endlist), len(allpaths)))
+				endingcnt += 1
+
+				for p in allpaths:
+					if p in processedresults:
+						dbg.log("    > Skipping duplicate path from 0x%08x to 0x%08x" % (addy,endaddy))
+					else:
+						processedresults.append(p)
+						logl = "Path from 0x%08x to 0x%08x (%d instructions) :" % (addy,endaddy,len(p))
+						logfile.write("\n",thislog)
+						logfile.write(logl,thislog)
+						logfile.write("-" * len(logl),thislog)
+						dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
+						cregsb = []
+						for c in cregs:
+							cregsb.append(c)
+						cregscb = []
+						for c in cregsc:
+							cregscb.append(c)
+
+						prevfname = ""
+						fname = ""
+						foffset = ""
+						previnstruction = ""
+						for thisaddy in p:
+							if showfuncposition:
+								if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
+									if not thisaddy in funcnamecache:
+										fname,foffset = getFunctionName(thisaddy)
+										funcnamecache[thisaddy] = [fname,foffset]
+									else:
+										fname = funcnamecache[thisaddy][0]
+										foffset = funcnamecache[thisaddy][1]
+									if fname != prevfname:
+										prevfname = fname
+										locname = fname
+										if foffset != "":
+											locname += "+%s" % foffset
+										logfile.write("#--- %s ---" % locname,thislog)
+									#dbg.log("%s" % locname)
+
+							thisopcode = dbg.disasm(thisaddy)
+							instruction = thisopcode.getDisasm()
+							previnstruction = instruction
+							clist = []
+							clistc = []
+							for c in cregsb:
+								combins = []
+								combins.append(" %s" % c)
+								combins.append("[%s" % c)
+								combins.append(",%s" % c)
+								combins.append("%s]" % c)
+								combins.append("%s-" % c)
+								combins.append("%s+" % c)
+								combins.append("-%s" % c)
+								combins.append("+%s" % c)
+								for comb in combins:
+									if comb in instruction and not c in clist:
+										clist.append(c)
+
+							for c in cregscb:
+								combins = []
+								combins.append(" %s" % c)
+								combins.append("[%s" % c)
+								combins.append(",%s" % c)
+								combins.append("%s]" % c)
+								combins.append("%s-" % c)
+								combins.append("%s+" % c)
+								combins.append("-%s" % c)
+								combins.append("+%s" % c)
+								for comb in combins:
+									if comb in instruction and not c in clistc:
+										clistc.append(c)
+							
+							rsrc,rdst = getSourceDest(instruction)
+
+							csource = False
+							cdest = False
+
+							if rsrc in cregsb or rsrc in cregscb:
+								csource = True
+							if rdst in cregsb or rdst in cregscb:
+								cdest = True
+
+							destructregs = ["MOV","XOR","OR"]
+							writeregs = ["INC","DEC","AND"]
+
+
+							ocregsb = copy.copy(cregsb)
+
+							if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
+								for d in destructregs:
+									if instruction.startswith(d):
+										sourcefound = False
+										sourcereg = ""
+										destfound = False
+										destreg = ""
+
+										for s in clist:
+											for sr in rsrc:
+												if s in sr and not sourcefound:
+													sourcefound = True
+													sourcereg = s
+											for sr in rdst:
+												if s in sr and not destfound:
+													destfound = True
+													destreg = s
+
+										if sourcefound and destfound:
+											if not destreg in cregsb:
+												cregsb.append(destreg)
+										if destfound and not sourcefound:
+											sregs = getSmallerRegs(destreg)
+											if destreg in cregsb:
+												cregsb.remove(destreg)
+											for s in sregs:
+												if s in cregsb:
+													cregsb.remove(s)
+										break
+							#else:
+								#dbg.log("    Control: %s" % ocregsb)
+
+
+							logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
+							
+							#if len(cregs) > 0 or len(cregsb) > 0:
+							#	if cmp(ocregsb,cregsb) == -1:
+							#		dbg.log("    Before: %s" % ocregsb)
+							#		dbg.log("    After : %s" % cregsb)
+			return
+
+
 		def procChangeACL(args):
 			size = 1
 			addy = 0
@@ -15931,9 +16863,8 @@ def main(args):
 			aclerror = False
 			if "a" in args:
 				if type(args["a"]).__name__.lower() != "bool":
-					try:
-						addy = int(args["a"],16)
-					except:
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
 						addyerror = True
 			if "acl" in args:
 				if type(args["acl"]).__name__.lower() != "bool":
@@ -15959,6 +16890,108 @@ def main(args):
 				dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
 				dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
 				retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
+			return
+
+
+		def procToBp(args):
+			"""
+			Generate WinDBG syntax to create a logging breakpoint on a given location
+			"""
+			addy = 0
+			addyerror = False
+			executenow = False
+			locsyntax = ""
+			regsyntax = ""
+			poisyntax = ""
+			dmpsyntax = ""
+			instructionparts = []
+			global silent
+			oldsilent = silent
+			regs = dbg.getRegs()
+			silent = True
+			if "a" in args:
+				if type(args["a"]).__name__.lower() != "bool":
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
+						addyerror = True
+			else:
+				addy = regs["EIP"]
+
+			if "e" in args:
+				executenow = True
+
+			if addyerror:
+				dbg.log(" *** Please provide a valid address with argument -a ***",highlight=1)
+				return
+
+			# get RVA for addy (or absolute address if addy is not part of a module)
+			bpdest = "0x%08x" % addy
+			instruction = ""
+			ptrx = MnPointer(addy)
+			modname = ptrx.belongsTo()
+			if not modname == "":
+				mod = MnModule(modname)
+				m = mod.moduleBase
+				rva = addy - m
+				bpdest = "%s+0x%02x" % (modname,rva)
+				thisopcode = dbg.disasm(addy)
+				instruction = thisopcode.getDisasm()
+
+			locsyntax = "bp %s" % bpdest
+
+			instructionparts = multiSplit(instruction,[" ",","])
+
+			usedregs = []
+			
+			for reg in regs:
+				for ipart in instructionparts:
+					if reg.upper() in ipart.upper():
+						usedregs.append(reg)
+
+			if len(usedregs) > 0:
+				regsyntax = '.printf \\"'
+				argsyntax = ""
+				
+				for ipart in instructionparts:
+					for reg in regs:
+						if reg.upper() in ipart.upper():
+
+							if "[" in ipart:
+								regsyntax += ipart.replace("[","").replace("]","")
+								regsyntax += ": 0x%08x, "
+
+								argsyntax += "%s," % ipart.replace("[","").replace("]","")
+
+								regsyntax += ipart
+								regsyntax += ": 0x%08x, "								
+
+								argsyntax += "%s," % ipart.replace("[","poi(").replace("]",")")
+								
+								iparttxt = ipart.replace("[","").replace("]","")
+								dmpsyntax += ".echo;.echo %s:;dds %s L 0x24/4;" % (iparttxt,iparttxt)
+							else:
+								regsyntax += ipart
+								regsyntax += ": 0x%08x, "								
+								argsyntax += "%s," % ipart 
+				argsyntax = argsyntax.strip(",")
+				regsyntax = regsyntax.strip(", ")
+				regsyntax += '\\",%s;' % argsyntax
+
+			if "CALL" in instruction.upper():
+				dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%08x):\\",esp;.echo;dds esp L 0x4;'
+
+			bpsyntax = locsyntax + ' ".echo ---------------;u eip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
+			filename = "logbps.txt"
+			logfile = MnLog(filename)
+			thislog = logfile.reset(False,False)
+			with open(thislog, "a") as fh:
+				fh.write(bpsyntax + "\n")
+			silent = oldsilent
+			dbg.log("%s" % bpsyntax)
+			dbg.log("Updated %s" % thislog)
+			if executenow:
+				dbg.nativeCommand(bpsyntax)
+				dbg.log("> Breakpoint set at 0x%08x" % addy)
 			return
 
 
@@ -16003,9 +17036,8 @@ def main(args):
 
 			if "a" in args:
 				if type(args["a"]).__name__.lower() != "bool":
-					try:
-						addy = int(args["a"],16)
-					except:
+					addy,addyok = getAddyArg(args["a"])
+					if not addyok:
 						addyerror = True
 
 			if "fill" in args:
@@ -16398,6 +17430,7 @@ Optional arguments :
     -c : enable checksum routine. Only works in conjunction with parameter -f
     -f <filename> : file containing the shellcode
     -startreg <reg> : start searching at the address pointed by this reg
+    -wow64 : generate wow64 egghunter. Default is traditional 32bit egghunter
 DEP Bypass options :
     -depmethod <method> : method can be "virtualprotect", "copy" or "copy_size"
     -depreg <reg> : sets the register that contains a pointer to the API function to bypass DEP. 
@@ -16591,6 +17624,34 @@ Optional arguments:
     -m <number>       : Size for recursive objects (default value: 0x28)
 """
 
+		dumplogUsage = """Dump all objects recorded in an alloc/free log
+Note: dumplog will only dump objects that have not been freed in the same logfile.
+Expected syntax for log entries:
+    Alloc : 'alloc(size in hex) = address'
+    Free  : 'free(address)'
+Additional text after the alloc & free info is fine.
+Just make sure the syntax matches exactly with the examples above.
+Arguments:
+    -f <path/to/logfile> : Full path to the logfile
+Optional arguments:
+    -l <number>       : Recursively dump objects
+    -m <number>       : Size for recursive objects (default value: 0x28)""" 
+
+		tobpUsage = """Generate WinDBG syntax to set a logging breakpoint at a given location
+Arguments:
+    -a <address>      : Location (address, register) for logging breakpoint
+Optional arguments:
+    -e                : Execute breakpoint command right away"""
+
+		flowUsage = """Simulates execution flows from current location (EIP), tries all conditional jump combinations
+Optional arguments:
+    -e <address>      : Show execution flows that will reach specified address
+    -n <nr>           : Max nr of instructions, default: 60
+    -cl <nr>          : Max level of CALL to follow in detail, default: 3
+    -cs <nr>          : Don't show details of first <nr> CALL/child functions. default: 0
+    -func             : Show function names (slows down process)."""
+
+
 		commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 		commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf")
 		commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j")
@@ -16638,8 +17699,11 @@ Optional arguments:
 		if __DEBUGGERAPP__ == "WinDBG":
 			commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk")
 			commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do")
+			commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl")
 			commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca")
-			commands["allocmem"]		= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc")
+			commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc")
+			commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp")
+			commands["flow"]		= MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
 		commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
 		commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain")
 		commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd")
