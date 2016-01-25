@@ -2,7 +2,7 @@
  
 U{Corelan<https://www.corelan.be>}
 
-Copyright (c) 2011-2013, Peter Van Eeckhoutte - Corelan GCV
+Copyright (c) 2011-2015, Peter Van Eeckhoutte - Corelan GCV
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -27,12 +27,12 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  
-$Revision: 540 $
-$Id: mona.py 540 2014-09-23 16:37:33Z corelanc0d3r $ 
+$Revision: 565 $
+$Id: mona.py 565 2015-11-22 08:46:02Z corelanc0d3r $ 
 """
 
 __VERSION__ = '2.0'
-__REV__ = filter(str.isdigit, '$Revision: 540 $')
+__REV__ = filter(str.isdigit, '$Revision: 565 $')
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
@@ -90,6 +90,8 @@ import datetime
 import binascii
 import itertools
 import traceback
+import pickle
+import json
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -166,6 +168,34 @@ memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
 #---------------------------------------#
 #  Utility functions                    #
 #---------------------------------------#	
+
+def resetGlobals():
+	"""
+	Clears all global variables
+	"""
+	global CritCache
+	global vtableCache
+	global stacklistCache
+	global segmentlistCache
+	global VACache
+	global NtGlobalFlag
+	global FreeListBitmap
+	global memProtConstants
+	global currentArgs
+
+	CritCache = None
+	vtableCache = None
+	stacklistCache = None
+	segmentlistCache = None
+	VACache = None
+	NtGlobalFlag = None
+	FreeListBitmap = None
+	memProtConstants = None
+	currentArgs = None
+
+
+	return
+
 def toHex(n):
 	"""
 	Converts a numeric value to hex (pointer to hex)
@@ -298,6 +328,8 @@ def getIntForPart(part):
 	regs = dbg.getRegs()
 	if partclean in regs:
 		partval = regs[partclean]
+	elif partclean.lower() == "heap" or partclean.lower() == "processheap":
+		partval = getDefaultProcessHeap()
 	else:
 		if partclean.lower().startswith("0n"):
 			partclean = partclean.lower().replace("0n","")
@@ -577,13 +609,13 @@ def bin2hexstr(binbytes):
 
 def str2js(inputstring):
 	"""
-	Converts a string to an unicode escaped javascript string
+	Converts a string to a javascript string
 	
 	Arguments:
 	inputstring - the input string to convert 
 
 	Return :
-	string in unicode escaped javascript format
+	string in javascript format
 	"""
 	length = len(inputstring)
 	if length % 2 == 1:
@@ -597,7 +629,43 @@ def str2js(inputstring):
 			thisunibyte = "%02x" % ord(thisbyte) + thisunibyte
 		toreturn += "%u" + thisunibyte
 	return toreturn		
-	
+
+
+def readJSONDict(filename):
+	"""
+	Retrieve stored dict from JSON file
+	"""
+	jsondict = {}
+	with open(filename, 'rb') as infile:
+		jsondata = infile.read()
+		jsondict = json.loads(jsondata)
+	return jsondict
+
+
+def writeJSONDict(filename, dicttosave):
+	"""
+	Write dict as JSON to file
+	"""
+	with open(filename, 'wb') as outfile:
+		json.dump(dicttosave, outfile)
+	return
+
+
+def readPickleDict(filename):
+	"""
+	Retrieve stored dict from file (pickle load)
+	"""
+	pdict = {}
+	pdict = pickle.load( open(filename,"rb"))
+	return pdict
+
+def writePickleDict(filename, dicttosave):
+	"""
+	Write a dict to file as a pickle
+	"""
+	pickle.dump(dicttosave, open(filename, "wb"))
+	return
+
 	
 def opcodesToHex(opcodes):
 	"""
@@ -1137,8 +1205,8 @@ def getHeapFlag(flag):
 	0x40 : "FFU-2",
 	0x80 : "No Coalesce"
 	}
-	if win7mode:
-		flags[0x8] = "Internal"
+	#if win7mode:
+	#	flags[0x8] = "Internal"
 	if flag in flags:
 		return flags[flag]
 	else:
@@ -1328,35 +1396,47 @@ def getModuleObj(modname):
 	# Method 2
 
 	suffixes = ["",".exe",".dll"]
+	allmod = dbg.getAllModules()
 	for suf in suffixes:
-		modname_search = modname + suf
-		allmod = dbg.getAllModules()
-		for tmod_s in allmod:
-			tmod = dbg.getModule(tmod_s)
-			if not tmod == None:
-				if tmod.getName() == modname_search:
-					return MnModule(tmod_s)
-				imname = dbg.getImageNameForModule(tmod.getName())
-				if not imname == None:
-					if imname == modname_search:
-						return MnModule(tmod)
-		# Method 3
-		for tmod_s in allmod:
-			tmod = dbg.getModule(tmod_s)
-			if not tmod == None:
-				if tmod.getName().lower() == modname_search.lower():
-					return MnModule(tmod_s)
-				imname = dbg.getImageNameForModule(tmod.getName().lower())
-				if not imname == None:
-					if imname.lower() == modname_search.lower():
-						return MnModule(tmod)
-
-		# Method 4
-		for tmod_s in allmod:
-			tmod = dbg.getModule(tmod_s)
-			if not tmod == None:
-				if tmod_s.lower() == modname_search.lower():
-					return MnModule(tmod_s)
+		modname_search = modname + suf	
+		
+		#WinDBG optimized
+		if __DEBUGGERAPP__ == "WinDBG":	
+			for tmod_s in allmod:
+				tmod = dbg.getModule(tmod_s)
+				if not tmod == None:
+					if tmod.getName() == modname_search:
+						return MnModule(tmod_s)
+					imname = dbg.getImageNameForModule(tmod.getName())
+					if not imname == None:
+						if imname == modname_search:
+							return MnModule(tmod)
+			for tmod_s in allmod:
+				tmod = dbg.getModule(tmod_s)
+				if not tmod == None:
+					if tmod.getName().lower() == modname_search.lower():
+						return MnModule(tmod_s)
+					imname = dbg.getImageNameForModule(tmod.getName().lower())
+					if not imname == None:
+						if imname.lower() == modname_search.lower():
+							return MnModule(tmod)
+			for tmod_s in allmod:
+				tmod = dbg.getModule(tmod_s)
+				if not tmod == None:
+					if tmod_s.lower() == modname_search.lower():
+						return MnModule(tmod_s)
+		else:
+			# Immunity
+			for tmod_s in allmod:
+				if not tmod_s == None:
+					mname = tmod_s.getName()
+					if mname == modname_search:
+						return MnModule(mname)
+			for tmod_s in allmod:
+				if not tmod_s == None:
+					mname = tmod_s.getName()
+					if mname.lower() == modname_search.lower():
+						return MnModule(mname)
 		
 	return None
 	
@@ -2111,6 +2191,11 @@ class MnConfig:
 	def __init__(self):
 	
 		self.configfile = "mona.ini"
+		self.currpath = os.path.dirname(os.path.realpath(self.configfile))
+		# first check if we will be saving the file into Immunity folder
+		if __DEBUGGERAPP__ == "Immunity Debugger":
+			if not os.path.exists(os.path.join(self.currpath,"immunitydebugger.exe")):
+				dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath)
 	
 	def get(self,parameter):
 		"""
@@ -2184,6 +2269,7 @@ class MnConfig:
 				FILE=open(self.configfile,"w")
 				FILE.writelines(newcontent)
 				FILE.close()
+				dbg.log("     mona.ini saved under %s" % self.currpath)
 			except:
 				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
 				return ""
@@ -2402,7 +2488,7 @@ class MnModule:
 	Class to access module properties
 	"""
 	def __init__(self, modulename):
-		
+		#dbg.log("MnModule(%s)" % modulename)
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -2439,14 +2525,14 @@ class MnModule:
 				mcodetop = getModuleProperty(modulename,"codetop")
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
-				self.moduleobj = dbg.getModule(modulename)	
+				self.moduleobj = dbg.getModule(modulename)
 				modissafeseh = True
 				modisaslr = True
 				modisnx = True
 				modrebased = False
 				modisos = False
-				if self.moduleobj == None:
-					dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
+				#if self.moduleobj == None:
+				#	dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
 				mod       = self.moduleobj
 				mzbase    = mod.getBaseAddress()
 				mzrebase  = mod.getFixupbase()
@@ -3015,6 +3101,7 @@ class MnHeap:
 		Return: Int, containing the Encoding key (on Windows 7 and up)
 		or zero on older Operating Systems
 		"""
+		self.Encoding = 0
 		if win7mode:
 			self.EncodeFlagMask = struct.unpack('<L',dbg.readMemory(self.heapbase+0x4c,4))[0]
 			if self.EncodeFlagMask == 0x100000:
@@ -3246,8 +3333,10 @@ class MnHeap:
 		"""
 		global VACache
 		offset = 0x50
+		encodingkey = 0
 		if win7mode:
 			offset = 0xa0
+			encodingkey = self.getEncodingKey()
 		if not self.heapbase in VACache:
 			try:
 				# get virtualallocdBlocks for this heap
@@ -3255,18 +3344,41 @@ class MnHeap:
 				valistentry = struct.unpack('<L',dbg.readMemory(vaptr,4))[0]
 				while valistentry != vaptr:
 					# get VA Header info
+					# header:
+					# FLINK (4)
+					# BLINK (4)
+					# Normal header (8), encoded on Win7
+					# CommitSize (8)
+					# ReserveSize (8)  ( = requested size)
+
 					headersize = 0x20
 					vaheader = dbg.readMemory(valistentry,32)
 					flink = struct.unpack('<L',vaheader[0:4])[0]
-					blink = struct.unpack('<L',vaheader[4:8])[0]
-					commitsize = struct.unpack('<L',vaheader[16:20])[0]
-					reservesize = struct.unpack('<L',vaheader[20:24])[0]
-					size = struct.unpack('<H',vaheader[24:26])[0]
-					prevsize = struct.unpack('<H',vaheader[26:28])[0]
+					blink = struct.unpack('<L',vaheader[4:8])[0]			
+								
+					commitsize = struct.unpack('<H',vaheader[16:18])[0] * 0x10
+					reservesize = struct.unpack('<H',vaheader[20:22])[0] * 0x10
+
+					# TO DO : fix VirtualAllocdBlock header parsing. Broken stuff.
+					if commitsize == 0:
+						commitsize = struct.unpack('<L',vaheader[0x10:0x14])[0] / 8
+						reservesize = struct.unpack('<L',vaheader[0x14:0x18])[0] / 8
+
+					size_e = struct.unpack('<H',vaheader[24:26])[0]
+					if win7mode:
+						size = (size_e ^ (encodingkey & 0xFFFF)) * 0x10
+					else:
+						size = size_e * 0x10
+					
+					#prevsize = struct.unpack('<H',vaheader[26:28])[0]
+					prevsize = 0
 					segmentid = struct.unpack('<B',vaheader[28:29])[0]
 					flag = struct.unpack('<B',vaheader[29:30])[0]
+					if win7mode:
+						flag = struct.unpack('<B',vaheader[22:23])[0]
 					unused = struct.unpack('<B',vaheader[30:31])[0]
 					tag = struct.unpack('<B',vaheader[31:])[0]
+
 					chunkobj = MnChunk(valistentry,"virtualalloc",headersize,self.heapbase,0,size,prevsize,segmentid,flag,unused,tag,flink,blink,commitsize,reservesize)
 					self.VirtualAllocdBlocks[valistentry] = chunkobj
 					valistentry = struct.unpack('<L',dbg.readMemory(valistentry,4))[0]
@@ -3311,6 +3423,30 @@ class MnHeap:
 		Return: Int
 		"""
 		return struct.unpack('<L',dbg.readMemory(self.heapbase+0xd4,4))[0]
+
+
+	def getState(self):
+		"""
+		Enumerates all segments, chunks and VirtualAllocdBlocks in the current heap
+
+		Return: array of dicts 
+			0 : segments  (with segment addy as key), contains list of chunks 
+			1 : vablocks 
+		Key: Heap
+		Contents:
+			Segment -> Chunks
+			VA Blocks
+		"""
+		statedata = {}
+		segments = getSegmentsForHeap(self.heapbase)
+		for seg in segments:
+			segstart = segments[seg][0]
+			segend = segments[seg][1]
+			FirstEntry = segments[seg][2]
+			LastValidEntry = segments[seg][3]
+			datablocks = walkSegment(FirstEntry,LastValidEntry,self.heapbase)
+			statedata[seg] = datablocks
+		return statedata
 
 """
 Low Fragmentation Heap
@@ -3547,7 +3683,7 @@ class MnChunk:
 		# if ust/hpa is enabled, the chunk header is followed by 32bytes of DPH_BLOCK_INFORMATION header info
 		currentflagnames = getNtGlobalFlagNames(getNtGlobalFlag())
 		if "ust" in currentflagnames:
-						self.hasust = True				
+			self.hasust = True				
 		if "hpa" in currentflagnames:
 			self.extraheadersize = 0x20
 			# reader header info
@@ -3590,8 +3726,9 @@ class MnChunk:
 				iHeap = MnHeap(self.heapbase)
 				if iHeap.usesLFH():
 					dbg.log("    Heap has LFH enabled. LFH Heap starts at 0x%08x" % iHeap.getLFHAddress())
-					if "busy" in self.flagtxt.lower() and "internal" in self.flagtxt.lower() and self.usersize > 0x1ff0:
-						dbg.log("    This chunk may be managed by LFH")
+					if "busy" in self.flagtxt.lower() and "virtallocd" in self.flagtxt.lower():
+						dbg.log("    ** This chunk may be managed by LFH")
+						self.flagtxt = self.flagtxt.replace("Virtallocd","Internal")
 			dbg.log("                      (         bytes        )                   (bytes)")						
 			dbg.log("      HEAP_ENTRY      Size  PrevSize    Unused Flags    UserPtr  UserSize Remaining - state")
 			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*8,self.prevsize*8,self.unused,self.flag,self.userptr,self.usersize,self.unused-self.headersize,self.flagtxt))
@@ -3893,6 +4030,7 @@ class MnPointer:
 			if len(valist) > 0:
 				for vachunk in valist:
 					thischunk = valist[vachunk]
+					#dbg.log("self: 0x%08x, vachunk: 0x%08x, commitsize: 0x%08x, vachunk+(thischunk.commitsize)*8: 0x%08x" % (self.address,vachunk,thischunk.commitsize,vachunk+(thischunk.commitsize*8)))
 					if self.address >= vachunk and self.address <= (vachunk+(thischunk.commitsize*8)):
 						return True
 		return False
@@ -4107,6 +4245,8 @@ class MnPointer:
 		foundinsegment = None
 		foundinva = None
 		foundinchunk = None
+		dumpsize = 0
+		dodump = False
 
 		try:
 			allheaps = dbg.getHeapsAddress()
@@ -4147,8 +4287,8 @@ class MnPointer:
 							thischunk.showChunk(showdata = True)
 							self.showObjectInfo()
 							self.showHeapStackTrace(thischunk)
-							if thissize < 1025:
-								self.dumpObjectAtLocation(thissize)
+							dodump = True
+							dumpsize = thissize
 						foundinchunk = thischunk
 						foundinsegment = seg
 						foundinheap = heapbase
@@ -4169,92 +4309,100 @@ class MnPointer:
 							thischunk.showChunk(showdata = True)
 							self.showObjectInfo()
 							self.showHeapStackTrace(thischunk)
-							if thissize < 1025:
-								self.dumpObjectAtLocation(thissize)									
+							thissize = thischunk.usersize
+							dumpsize = thissize
+							dodump = True					
 						foundinchunk = thischunk
 						foundinva = vaptr
 						foundinheap = heapbase
+						break
 
 			# perhaps chunk is in FEA
-			if not win7mode:
-				foundinlal = False
-				foundinfreelist = False
-				FrontEndHeap = mHeap.getFrontEndHeap()
-				if FrontEndHeap > 0:
-					fea_lal = mHeap.getLookAsideList()
-					for lal_table_entry in sorted(fea_lal.keys()):
-						nr_of_chunks = len(fea_lal[lal_table_entry])
-						lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
-						for chunkindex in fea_lal[lal_table_entry]:
-							lalchunk = fea_lal[lal_table_entry][chunkindex]
-							chunksize = lalchunk.size * 8
-							flag = getHeapFlag(lalchunk.flag)
-							if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
-								foundinlal = True
-								if not silent:
-									dbg.log("Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
-								break
-						if foundinlal:
-							expectedsize = lal_table_entry * 8
-							if not silent:
-								dbg.log("     LAL [%d] @0x%08x, Expected Chunksize: 0x%x (%d), %d chunks, Flink: 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,nr_of_chunks,lalhead))
+			# if it is, it won't be a VA chunk
+			if foundinva == None:
+				if not win7mode:
+					foundinlal = False
+					foundinfreelist = False
+					FrontEndHeap = mHeap.getFrontEndHeap()
+					if FrontEndHeap > 0:
+						fea_lal = mHeap.getLookAsideList()
+						for lal_table_entry in sorted(fea_lal.keys()):
+							nr_of_chunks = len(fea_lal[lal_table_entry])
+							lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
 							for chunkindex in fea_lal[lal_table_entry]:
 								lalchunk = fea_lal[lal_table_entry][chunkindex]
-								foundchunk = lalchunk
 								chunksize = lalchunk.size * 8
 								flag = getHeapFlag(lalchunk.flag)
-								extra = "       "
 								if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
-									extra = "   --> "
+									foundinlal = True
+									if not silent:
+										dbg.log("Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
+									break
+							if foundinlal:
+								expectedsize = lal_table_entry * 8
 								if not silent:
-									dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
-							if not silent:
-								self.showObjectInfo()
-								if chunksize < 1025:
-									self.dumpObjectAtLocation(chunksize)
-							break
-
-				if not foundinlal:
-					# or maybe in BEA
-					thisfreelist = mHeap.getFreeList()
-					thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()				
-					for flindex in thisfreelist:
-						freelist_addy = heapbase + 0x178 + (8 * flindex)
-						expectedsize = ">1016"
-						expectedsize2 = ">0x%x" % 1016
-						if flindex != 0:
-							expectedsize2 = str(8 * flindex)
-							expectedsize = "0x%x" % (8 * flindex)
-						for flentry in thisfreelist[flindex]:
-							freelist_chunk = thisfreelist[flindex][flentry]
-							chunksize = freelist_chunk.size * 8
-							if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
-								foundinfreelist = True
+									dbg.log("     LAL [%d] @0x%08x, Expected Chunksize: 0x%x (%d), %d chunks, Flink: 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,nr_of_chunks,lalhead))
+								for chunkindex in fea_lal[lal_table_entry]:
+									lalchunk = fea_lal[lal_table_entry][chunkindex]
+									foundchunk = lalchunk
+									chunksize = lalchunk.size * 8
+									flag = getHeapFlag(lalchunk.flag)
+									extra = "       "
+									if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
+										extra = "   --> "
+									if not silent:
+										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
 								if not silent:
-									dbg.log("Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
+									self.showObjectInfo()
+									dumpsize = chunksize
+									dodump = True
 								break
-						if foundinfreelist:
-							flindicator = 0
+
+					if not foundinlal:
+						# or maybe in BEA
+						thisfreelist = mHeap.getFreeList()
+						thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()				
+						for flindex in thisfreelist:
+							freelist_addy = heapbase + 0x178 + (8 * flindex)
+							expectedsize = ">1016"
+							expectedsize2 = ">0x%x" % 1016
+							if flindex != 0:
+								expectedsize2 = str(8 * flindex)
+								expectedsize = "0x%x" % (8 * flindex)
 							for flentry in thisfreelist[flindex]:
 								freelist_chunk = thisfreelist[flindex][flentry]
-								chunksize = freelist_chunk.size * 8	
-								extra = "     "
-								if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):						
-									extra = " --> "
-									foundchunk = freelist_chunk
+								chunksize = freelist_chunk.size * 8
+								if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
+									foundinfreelist = True
+									if not silent:
+										dbg.log("Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
+									break
+							if foundinfreelist:
+								flindicator = 0
+								for flentry in thisfreelist[flindex]:
+									freelist_chunk = thisfreelist[flindex][flentry]
+									chunksize = freelist_chunk.size * 8	
+									extra = "     "
+									if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):						
+										extra = " --> "
+										foundchunk = freelist_chunk
+									if not silent:
+										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
+									if flindex != 0 and chunksize != (8*flindex):
+										dbg.log("     ** Header may be corrupted! **", highlight = True)
+									flindicator = 1
+								if flindex > 1 and int(thisfreelistinusebitmap[flindex]) != flindicator:
+									if not silent:
+										dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
 								if not silent:
-									dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
-								if flindex != 0 and chunksize != (8*flindex):
-									dbg.log("     ** Header may be corrupted! **", highlight = True)
-								flindicator = 1
-							if flindex > 1 and int(thisfreelistinusebitmap[flindex]) != flindicator:
-								if not silent:
-									dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-							if not silent:
-								self.showObjectInfo()
-								if chunksize < 1025:
-									self.dumpObjectAtLocation(chunksize)							
-							break					
+									self.showObjectInfo()
+									dumpsize = chunksize
+									dodump = True
+								break		
+
+		if dodump and dumpsize > 0 and dumpsize < 1025 and not silent:
+			self.dumpObjectAtLocation(dumpsize)	
+
 		return foundinheap, foundinsegment, foundinva, foundinchunk
 
 	def showHeapStackTrace(self,thischunk):
@@ -4455,6 +4603,8 @@ class MnPointer:
 						dbg.log(line)
 					logfile.write(line,thislog)
 					offset += 4
+			if len(sortedkeys) > 0:
+				dbg.log("")
 		return
 
 	def getLocInfo(self,loc,addy,startaddy,endaddy):
@@ -5184,47 +5334,47 @@ def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
 
 		search.append(["jmp dword ptr ss:[esp+08]","\xff\x64\x24\x08"])
 		search.append(["jmp dword ptr ss:[esp+08]","\xff\xa4\x24\x08\x00\x00\x00"])
-		search.append(["jmp dword ptr ds:[esp+08]","\x3e\ff\x64\x24\x08"])
+		search.append(["jmp dword ptr ds:[esp+08]","\x3e\xff\x64\x24\x08"])
 		
 		search.append(["call dword ptr ss:[esp+14]","\xff\x54\x24\x14"])
 		search.append(["call dword ptr ss:[esp+14]","\xff\x94\x24\x14\x00\x00\x00"])	
 		search.append(["call dword ptr ds:[esp+14]","\x3e\xff\x54\x24\x14"])
 		
-		search.append(["jmp dword ptr ss:[esp+14]","\xff\x54\x24\x14"])
+		search.append(["jmp dword ptr ss:[esp+14]","\xff\x64\x24\x14"])
 		search.append(["jmp dword ptr ss:[esp+14]","\xff\xa4\x24\x14\x00\x00\x00"])		
-		search.append(["jmp dword ptr ds:[esp+14]","\x3e\xff\x54\x24\x14"])
+		search.append(["jmp dword ptr ds:[esp+14]","\x3e\xff\x64\x24\x14"])
 		
 		search.append(["call dword ptr ss:[esp+1c]","\xff\x54\x24\x1c"])
 		search.append(["call dword ptr ss:[esp+1c]","\xff\x94\x24\x1c\x00\x00\x00"])		
 		search.append(["call dword ptr ds:[esp+1c]","\x3e\xff\x54\x24\x1c"])
 		
-		search.append(["jmp dword ptr ss:[esp+1c]","\xff\x54\x24\x1c"])
+		search.append(["jmp dword ptr ss:[esp+1c]","\xff\x64\x24\x1c"])
 		search.append(["jmp dword ptr ss:[esp+1c]","\xff\xa4\x24\x1c\x00\x00\x00"])		
-		search.append(["jmp dword ptr ds:[esp+1c]","\x3e\xff\x54\x24\x1c"])
+		search.append(["jmp dword ptr ds:[esp+1c]","\x3e\xff\x64\x24\x1c"])
 		
 		search.append(["call dword ptr ss:[esp+2c]","\xff\x54\x24\x2c"])
-		search.append(["call dword ptr ss:[esp+2c]","\xff\94\x24\x2c\x00\x00\x00"])
+		search.append(["call dword ptr ss:[esp+2c]","\xff\x94\x24\x2c\x00\x00\x00"])
 		search.append(["call dword ptr ds:[esp+2c]","\x3e\xff\x54\x24\x2c"])
 
-		search.append(["jmp dword ptr ss:[esp+2c]","\xff\x54\x24\x2c"])
+		search.append(["jmp dword ptr ss:[esp+2c]","\xff\x64\x24\x2c"])
 		search.append(["jmp dword ptr ss:[esp+2c]","\xff\xa4\x24\x2c\x00\x00\x00"])		
-		search.append(["jmp dword ptr ds:[esp+2c]","\x3e\xff\x54\x24\x2c"])
+		search.append(["jmp dword ptr ds:[esp+2c]","\x3e\xff\x64\x24\x2c"])
 		
 		search.append(["call dword ptr ss:[esp+44]","\xff\x54\x24\x44"])
 		search.append(["call dword ptr ss:[esp+44]","\xff\x94\x24\x44\x00\x00\x00"])		
 		search.append(["call dword ptr ds:[esp+44]","\x3e\xff\x54\x24\x44"])		
 		
-		search.append(["jmp dword ptr ss:[esp+44]","\xff\x54\x24\x44"])
+		search.append(["jmp dword ptr ss:[esp+44]","\xff\x64\x24\x44"])
 		search.append(["jmp dword ptr ss:[esp+44]","\xff\xa4\x24\x44\x00\x00\x00"])
-		search.append(["jmp dword ptr ds:[esp+44]","\x3e\xff\x54\x24\x44"])
+		search.append(["jmp dword ptr ds:[esp+44]","\x3e\xff\x64\x24\x44"])
 		
 		search.append(["call dword ptr ss:[esp+50]","\xff\x54\x24\x50"])
 		search.append(["call dword ptr ss:[esp+50]","\xff\x94\x24\x50\x00\x00\x00"])		
 		search.append(["call dword ptr ds:[esp+50]","\x3e\xff\x54\x24\x50"])		
 		
-		search.append(["jmp dword ptr ss:[esp+50]","\xff\x54\x24\x50"])
+		search.append(["jmp dword ptr ss:[esp+50]","\xff\x64\x24\x50"])
 		search.append(["jmp dword ptr ss:[esp+50]","\xff\xa4\x24\x50\x00\x00\x00"])
-		search.append(["jmp dword ptr ds:[esp+50]","\x3e\xff\x54\x24\x50"])
+		search.append(["jmp dword ptr ds:[esp+50]","\x3e\xff\x64\x24\x50"])
 		
 		search.append(["call dword ptr ss:[ebp+0c]","\xff\x55\x0c"])
 		search.append(["call dword ptr ss:[ebp+0c]","\xff\x95\x0c\x00\x00\x00"])		
@@ -5851,6 +6001,9 @@ def assemble(instructions,encoder=""):
 		dbg.log(" Full opcode : %s " % allopcodes)
 	return allopcodes
 	
+
+
+
 	
 def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5,split=False,pivotdistance=0,fast=False,mode="all"):
 	"""
@@ -6098,9 +6251,14 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			objprogressfile.write(updatetext.strip(),progressfile)
 			suggtowrite=""
 			for suggestedtype in suggestions:
-				if suggestedtype.find("pop ") == -1:		#too many, don't write to file
-					suggtowrite += "[%s]\n" % suggestedtype
-					for suggestedpointer in suggestions[suggestedtype]:
+				limitnr = 0x7fffffff
+				if suggestedtype.startswith("pop "):		# only write up to 10 pop r32 into suggestions file
+					limitnr = 10
+				gcnt = 0
+
+				suggtowrite += "[%s]\n" % suggestedtype
+				for suggestedpointer in suggestions[suggestedtype]:
+					if gcnt < limitnr:
 						sptr = MnPointer(suggestedpointer)
 						modname = sptr.belongsTo()
 						modinfo = MnModule(modname)
@@ -6112,6 +6270,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						else:
 							ptrinfo = "0x" + toHex(suggestedpointer) + " : " + suggesteddata + "    ** [" + modname + "] **   |  " + sptr.__str__()+"\n"
 						suggtowrite += ptrinfo
+					else:
+						break
+					gcnt += 1
 			dbg.log("[+] Launching ROP generator")
 			updatetext = "Attempting to create rop chain proposals"
 			objprogressfile.write(updatetext.strip(),progressfile)
@@ -6185,6 +6346,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				fh.write("\n")
 			nrsugg = len(suggtowrite.split("\n"))
 			dbg.log("    Wrote %d suggestions to file" % nrsugg)
+
 		if not split:
 			logfile = MnLog("rop.txt")
 			thislog = logfile.reset()
@@ -6626,8 +6788,27 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 	return
 
 
+
 #------------------#
-# Cyclic pattern	#
+# Heap state       #
+#------------------#
+
+def getCurrentHeapState():
+	heapstate = {}
+	allheaps = []
+	try:
+		allheaps = dbg.getHeapsAddress()
+	except:
+		allheaps = []
+	if len(allheaps) > 0:
+		for heap in allheaps:
+			objHeap = MnHeap(heap)
+			thisheapstate = objHeap.getState()
+			heapstate[heap] = thisheapstate
+	return heapstate
+
+#------------------#
+# Cyclic pattern   #
 #------------------#	
 
 def createPattern(size,args={}):
@@ -6655,11 +6836,6 @@ def createPattern(size,args={}):
 	if "c3" in args and args["c3"] != "":
 		char3 = args["c3"]
 			
-	if "js" in args:
-		js_output = True
-	else:
-		js_output = False
-
 	if not silent:
 		if not "extended" in args and size > 20280 and (len(char1) <= 26 or len(char2) <= 26 or len(char3) <= 10):
 			msg = "** You have asked to create a pattern > 20280 bytes, but with the current settings\n"
@@ -6686,8 +6862,6 @@ def createPattern(size,args={}):
 						pattern.append(ch3)
 
 	pattern = "".join(pattern)
-	if js_output:
-		return str2js(pattern)
 	return pattern
 
 def findOffsetInPattern(searchpat,size=20280,args = {}):
@@ -7394,7 +7568,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	return allpointers
 		
 
-def compareFileWithMemory(filename,startpos,skipmodules=False):
+def compareFileWithMemory(filename,startpos,skipmodules=False,findunicode=False):
 	dbg.log("[+] Reading file %s..." % filename)
 	srcdata_normal=[]
 	srcdata_unicode=[]
@@ -7417,6 +7591,8 @@ def compareFileWithMemory(filename,startpos,skipmodules=False):
 	# loop normal and unicode
 	comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])	
 	modes = ["normal", "unicode"]
+	if not findunicode:
+		modes.remove("unicode")
 	objlogfile = MnLog("compare.txt")
 	logfile = objlogfile.reset()
 	for mode in modes:
@@ -7455,6 +7631,8 @@ def compareFileWithMemory(filename,startpos,skipmodules=False):
 					ptrinfo = MnPointer(ptr).memLocation()
 					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
 						locations.append(ptr)
+			if len(locations) == 0:
+				dbg.log("      Oops, no copies found")
 		else:
 			startpos_fixed = startpos
 			locations.append(startpos_fixed)
@@ -7853,7 +8031,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  ESI = ptr to VirtualProtect()
  EDI = ROP NOP (RETN)
  --- alternative chain ---
- EAX = tr to &VirtualProtect()
+ EAX = ptr to &VirtualProtect()
  ECX = lpOldProtect (ptr to W address)
  EDX = NewProtect (0x40)
  EBX = dwSize
@@ -8165,7 +8343,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 				regsequences.append(reg)
 		
 
-		
+		regimpact = {}
 		# create the current chain
 		ropdbchain = ""
 		tohex_array = []
@@ -8261,6 +8439,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			thisinstr = interestinggadgets[shortest_pushad].lstrip()
 			if thisinstr.startswith("#"):
 				thisinstr = thisinstr[2:len(thisinstr)]
+			regimpact = getRegImpact(thisinstr)
 			thismodname = MnPointer(shortest_pushad).belongsTo()
 			thisinstr += " [" + thismodname + "]"
 			tmod = MnModule(thismodname)
@@ -8468,6 +8647,35 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	objprogressfile.write("Done creating rop chains",progressfile)
 	return vplogtxt
 
+
+def getRegImpact(instructionstr):
+	rimpact = {}
+	instrlineparts = instructionstr.split(" # ")
+	changers = ["ADD","SUB","ADC","INC","DEC","XOR"]
+	for i in instrlineparts:
+		instrparts = i.split(" ")
+		dreg = ""
+		dval = 0
+		if len(instrparts) > 1:
+			if instrparts[0] in changers:
+				dreg = instrparts[1]
+				if instrparts[0] == "INC":
+					dval = -1
+				elif instrparts[0] == "DEC":
+					dval = 1
+				else:
+					vparts = i.split(",")
+					if len(vparts) > 1:
+						vpart = vparts[1]
+						dval = vpart
+
+		if dreg != "":
+			if not dreg in rimpact:
+				rimpact[dreg] = dval
+			else:
+				rimpact[dreg] = rimpact[dreg] + dval
+
+	return rimpact
 
 
 def getPickupGadget(targetreg,targetval,freetext,suggestions,interestinggadgets,criteria,modulecriteria,routine=""):
@@ -10693,7 +10901,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 def main(args):
 	dbg.createLogWindow()
 	global currentArgs
-	currentArgs = args
+	currentArgs = copy.copy(args)
 	try:
 		starttime = datetime.datetime.now()
 		ptr_counter = 0
@@ -10712,7 +10920,7 @@ def main(args):
 			bannertext += "    | / /__/ /_/ / /  /  __/ / /_/ / / / /  / /_/  __/ /_/ / / / / / / |\n"
 			bannertext += "    | \___/\____/_/   \___/_/\__,_/_/ /_/   \__/\___/\__,_/_/ /_/ /_/  |\n"
 			bannertext += "    |                                                                  |\n"
-			bannertext += "    |         https://www.corelan.be | http://redmine.corelan.be       |\n"
+			bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
 			bannertext += "    |------------------------------------------------------------------|\n"
 			banners[0] = bannertext
 
@@ -10731,9 +10939,9 @@ def main(args):
 			bannertext += "    |------------------------------------------------------------------|\n"
 			bannertext += "    |                                                                  |\n"
 			bannertext += "    |    _____ ___  ____  ____  ____ _                                 |\n"
-			bannertext += "    |    / __ `__ \/ __ \/ __ \/ __ `/    https://www.corelan.be       |\n"
-			bannertext += "    |   / / / / / / /_/ / / / / /_/ /     http://redmine.corelan.be    |\n"
-			bannertext += "    |  /_/ /_/ /_/\____/_/ /_/\__,_/      #corelan (Freenode IRC)      |\n"
+			bannertext += "    |    / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be         |\n"
+			bannertext += "    |   / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com|\n"
+			bannertext += "    |  /_/ /_/ /_/\____/_/ /_/\__,_/  #corelan (Freenode IRC)          |\n"
 			bannertext += "    |                                                                  |\n"
 			bannertext += "    |------------------------------------------------------------------|\n"
 			banners[2] = bannertext
@@ -10765,14 +10973,14 @@ def main(args):
 				pykdversion = dbg.getPyKDVersionNr()
 				dbg.log("     PyKD version %s" % pykdversion)
 			dbg.log("     Written by Corelan - https://www.corelan.be")
-			dbg.log("     Project page : https://redmine.corelan.be/projects/mona")
+			dbg.log("     Project page : https://github.com/corelan/mona")
 			dbg.logLines(getBanner(),highlight=1)
 			dbg.log("Global options :")
 			dbg.log("----------------")
 			dbg.log("You can use one or more of the following global options on any command that will perform")
 			dbg.log("a search in one or more modules, returning a list of pointers :")
 			dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
-			dbg.log("                          option -cm nonull instead")
+			dbg.log("                          option -cp nonull instead")
 			dbg.log(" -o                     : Ignore OS modules")
 			dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
 			dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
@@ -10794,7 +11002,7 @@ def main(args):
 			dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
 			dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
 			dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
-			dbg.log("                          only executable pointers will be return.")
+			dbg.log("                          only executable pointers will be returned.")
 			dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
 			
 			if not args:
@@ -11022,8 +11230,6 @@ def main(args):
 			processResults(all_opcodes,logfile,thislog,specialcases)
 			
 			
-			
-
 		# ----- MODULES ------ #
 		def procShowMODULES(args):
 			modulecriteria={}
@@ -11164,7 +11370,13 @@ def main(args):
 			pattern = ""
 			if "?" in args and args["?"] != "":
 				try:
-					size = int(args["?"])
+					if "0x" in args["?"].lower():
+						try:
+							size = int(args["?"],16)
+						except:
+							size = 0
+					else:
+						size = int(args["?"])
 				except:
 					size = 0
 			if size == 0:
@@ -11177,9 +11389,21 @@ def main(args):
 				ignoremodules = True
 				objpatternfile = MnLog("pattern.txt")
 				patternfile = objpatternfile.reset()
+				# ASCII
 				objpatternfile.write("\nPattern of " + str(size) + " bytes :\n",patternfile)
 				objpatternfile.write("-" * (19 + len(str(size))),patternfile)
+				objpatternfile.write("\nASCII:",patternfile)
 				objpatternfile.write("\n" + pattern,patternfile)
+				# Hex
+				patternhex = ""
+				for patternchar in pattern:
+					patternhex += str(hex(ord(patternchar))).replace("0x","\\x")
+				objpatternfile.write("\n\nHEX:\n",patternfile)
+				objpatternfile.write(patternhex,patternfile)
+				# Javascript
+				patternjs = str2js(pattern)
+				objpatternfile.write("\n\nJAVASCRIPT (unescape() friendly):\n",patternfile)
+				objpatternfile.write(patternjs,patternfile)
 				if not silent:
 					dbg.log("Note: don't copy this pattern from the log window, it might be truncated !",highlight=1)
 					dbg.log("It's better to open %s and copy the pattern from the file" % patternfile,highlight=1)
@@ -11529,12 +11753,7 @@ def main(args):
 				section = ""
 			if section != "":
 				dbg.log("    Section : %s" % section)
-			if rva != 0:
-				dbg.log("    Offset from module base: 0x%x" % rva)
-				if modinfo:
-					eatlist = modinfo.getEAT()
-					if address in eatlist:
-						dbg.log("    Address is start of function %s in %s" % (eatlist[address],modname))
+			
 			if ptr.isOnStack():
 				stacks = getStacks()
 				stackref = ""
@@ -11545,7 +11764,19 @@ def main(args):
 						break
 				dbg.log("    This address is in a stack segment %s" % stackref)
 			if modinfo:
-				dbg.log("    Module: %s" % modinfo.__str__())
+				dbg.log("    Address is part of a module:")
+				dbg.log("    %s" % modinfo.__str__())
+				if rva != 0:
+					dbg.log("    Offset from module base: 0x%x" % rva)
+					if modinfo:
+						eatlist = modinfo.getEAT()
+						if address in eatlist:
+							dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
+						else:
+							iatlist = modinfo.getIAT()
+							if address in iatlist:
+								iatentry = iatlist[address]
+								dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)				
 			else:
 				output = ""
 				if ptr.isInHeap():
@@ -11612,6 +11843,7 @@ def main(args):
 			startpos = 0
 			filename = ""
 			skipmodules = False
+			findunicode = False
 			allregs = dbg.getRegs()
 			if "f" in args:
 				filename = args["f"].replace('"',"").replace("'","")
@@ -11629,7 +11861,9 @@ def main(args):
 					return
 			if "s" in args:
 				skipmodules = True
-			compareFileWithMemory(filename,startpos,skipmodules)
+			if "unicode" in args:
+				findunicode = True
+			compareFileWithMemory(filename,startpos,skipmodules,findunicode)
 			
 			
 		# ----- offset: Calculate the offset between two addresses ----- #
@@ -12359,16 +12593,19 @@ def main(args):
 			"""
 
 			updateproto = "https"
-			if "http" in args:
-				updateproto  = "http"
+			#if "http" in args:
+			#	updateproto  = "http"
+			
 			#debugger version	
 			imversion = __IMM__
 			#url
 			dbg.setStatusBar("Running update process...")
 			dbg.updateLog()
 			updateurl = "https://github.com/corelan/mona/raw/master/mona.py"
-			if updateproto == "http":
-				updateurl = "http://redmine.corelan.be/projects/mona/repository/git/revisions/master/raw/mona.py"
+			
+			#if updateproto == "http":
+			#	updateurl = "http://redmine.corelan.be/projects/mona/repository/git/revisions/master/raw/mona.py"
+			
 			currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
 			u = ""
 			try:
@@ -12422,8 +12659,8 @@ def main(args):
 				else:
 					dbg.log("[+] Checking if %s needs an update..." % libfile)
 					updateurl = "https://github.com/corelan/windbglib/raw/master/windbglib.py"
-					if updateproto == "http":
-						updateurl = updateproto + "://redmine.corelan.be/projects/windbglib/repository/raw/windbglib.py"
+					#if updateproto == "http":
+					#	updateurl = updateproto + "://redmine.corelan.be/projects/windbglib/repository/raw/windbglib.py"
 					currentversion,currentrevision = getVersionInfo(libfile)
 					u = ""
 					try:
@@ -13465,6 +13702,7 @@ def main(args):
 					segmentinfo = " : " + segmentinfo
 					defheap = ""
 					lfhheap = ""
+					keyinfo = ""
 					if heap == getDefaultProcessHeap():
 						defheap = "* Default process heap"
 					if win7mode:
@@ -13472,7 +13710,9 @@ def main(args):
 						if iHeap.usesLFH():
 							lfhheapaddress = iHeap.getLFHAddress()
 							lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
-					dbg.log("0x%08x (%d segment(s)%s) %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap))
+						if iHeap.getEncodingKey() > 0:
+							keyinfo = "Encoding key: 0x%08x" % iHeap.getEncodingKey()
+					dbg.log("0x%08x (%d segment(s)%s) %s %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap,keyinfo))
 			else:
 				dbg.log(" ** No heaps found")
 			dbg.log("")
@@ -14125,6 +14365,9 @@ def main(args):
 											unused = thischunk.unused
 											headersize = thischunk.headersize
 											flagtxt = getHeapFlag(thischunk.flag)
+											if not infotype == "virtualallocdblocks" and "virtallocd" in flagtxt.lower():
+												flagtxt += " (LFH)"
+												flagtxt = flagtxt.replace("Virtallocd","Internal")
 											userptr = block + headersize
 											psize = thischunk.prevsize * 8
 											blocksize = thischunk.size * 8
@@ -14468,6 +14711,7 @@ def main(args):
 							thisfuncname = thisfuncname[firstindex+1:len(thisfuncname)]
 						addtolist = False
 						iatptr_modname = ""
+						modinfohr = ""
 						theptr = 0
 						if mode == "iat":
 							theptr = struct.unpack('<L',dbg.readMemory(thisfunc,4))[0]
@@ -14484,6 +14728,14 @@ def main(args):
 								oparts = origfuncname.split("!")
 								origfuncname = iatptr_modname + "." + oparts[1]
 								thisfuncname = origfuncname
+
+							try:
+								ModObj = MnModule(iatptr_modname)
+								modinfohr = " - %s" % (ModObj.__str__())
+							except:
+								modinfohr = ""
+								pass
+
 						if len(keywords) > 0:
 							for keyword in keywords:
 								keyword = keyword.lower().strip()
@@ -14506,9 +14758,11 @@ def main(args):
 							addtolist = True
 						if addtolist:
 							entriesfound += 1
+							# add info about the module
+
 							if mode == "iat":
 								thedelta = thisfunc - thismod.moduleBase
-								logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s)" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname)
+								logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
 							else:
 								thedelta = thisfunc - thismod.moduleBase
 								logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule.lower(),origfuncname,thismod.moduleBase,thedelta)
@@ -14989,12 +15243,12 @@ def main(args):
 					try:
 						mod = ptr.belongsTo()
 						if not mod == "":
+							mod = "(" + mod + ")"
 							sectionname = page.getSection()
 					except:
-						mod = ""
-					if not mod == "":
-						mod = "(" + mod + ")"
-					else:
+						#print traceback.format_exc()
+						pass
+					if mod == "":
 						if ptr.isOnStack():
 							mod = "(Stack)"
 						elif ptr.isInHeap():
@@ -15485,6 +15739,7 @@ def main(args):
 					dbg.logLines(traceback.format_exc(),highlight=True)			
 			return
 
+
 		def procKb(args):
 			validcommands = ['set','list','del']
 			validcommandfound = False
@@ -15655,16 +15910,16 @@ def main(args):
 				dbg.log("Address     Next SEH    Handler")
 				dbg.log("-------     --------    -------")
 				for sehrecord in sehchain:
-					address = sehrecord[0]
+					recaddress = sehrecord[0]
 					sehandler = sehrecord[1]
 					nseh = ""
 					try:
-						nsehvalue = struct.unpack('<L',dbg.readMemory(address,4))[0]
+						nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
 						nseh = "0x%08x" % nsehvalue
 					except:
 						nseh = 0
 						sehandler = 0
-					overwritedata = checkSEHOverwrite(address,nseh,sehandler)
+					overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
 					overwritemark = ""
 					funcinfo = ""
 					if sehandler > 0:
@@ -15677,7 +15932,7 @@ def main(args):
 						else:
 							nseh = "0x%08x" % int(nseh)
 					if len(overwritedata) > 0:
-						handlersoverwritten[address] = overwritedata
+						handlersoverwritten[recaddress] = overwritedata
 						smashoffset = int(overwritedata[1])
 						typeinfo = ""
 						if overwritedata[0] == "unicode":
@@ -15685,7 +15940,7 @@ def main(args):
 							typeinfo = " [unicode]"
 						overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
 						
-					dbg.log("0x%08x  %s  0x%08x %s%s" % (address,nseh,sehandler,funcinfo, overwritemark))
+					dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
 			if len(handlersoverwritten) > 0:
 				dbg.log("")
 				dbg.log("Payload structure suggestion(s):")
@@ -15912,16 +16167,21 @@ def main(args):
 
 			if "n" in args:
 				if type(args["n"]).__name__.lower() != "bool":
-					if str(args['n']).lower().startswith("0x"):
-						try:
-							nrbytes = int(args["n"],16)
-						except:
-							nrbytes = 0
+					if "+" in str(args['n']) or "-" in str(args['n']):
+						nrbytes,bytesok = getAddyArg(args['n'])
+						if not bytesok:
+							errorsfound = True
 					else:
-						try:
-							nrbytes = int(args["n"])
-						except:
-							nrbytes = 0
+						if str(args['n']).lower().startswith("0x"):
+							try:
+								nrbytes = int(args["n"],16)
+							except:
+								nrbytes = 0
+						else:
+							try:
+								nrbytes = int(args["n"])
+							except:
+								nrbytes = 0
 
 			errorsfound = False
 			if src == 0:
@@ -15947,7 +16207,7 @@ def main(args):
 
 
 
-		# unicode alignment routines written by floyd (http://www.floyd.cd, twitter: @floyd_ch)
+		# unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
 		def procUnicodeAlign(args):
 			leaks = False
 			address = 0
@@ -16495,12 +16755,109 @@ def main(args):
 			return
 
 
+		def procEval(args):
+			# put all args together
+			argline = ""
+			if len(currentArgs) > 1:
+				if __DEBUGGERAPP__ == "WinDBG":
+					for a in currentArgs[2:]:
+						argline += a
+				else:
+					for a in currentArgs[1:]:
+						argline += a 
+				argline = argline.replace(" ","")
+			if argline.replace(" ","") != "":
+				dbg.log("[+] Evaluating expression '%s'" % argline)
+				val,valok = getAddyArg(argline)
+				if valok:
+					dbg.log("    Result: 0x%08x" % val)
+				else:
+					dbg.log("    *** Unable to evaluate expression ***")
+			else:
+				dbg.log("    *** No expression found***")	
+			return
+
+
+
+		def procDiffHeap(args):
+
+			global ignoremodules
+			filenamebefore = "heapstate_before.db"
+			filenameafter = "heapstate_after.db"
+
+			ignoremodules = True
+
+			statefilebefore = MnLog(filenamebefore)
+			thisstatefilebefore = statefilebefore.reset(clear=False)
+
+			statefileafter = MnLog(filenameafter)
+			thisstatefileafter = statefileafter.reset(clear=False)
+
+			ignoremodules = False
+
+
+			beforestate = {}
+			afterstate = {}
+
+			#do we want to save states, or diff them?
+
+			if not "before" in args and not "after" in args and not "diff" in args:
+				dbg.log("*** Missing mandatory argument -before, -after or -diff ***", highlight=1)
+				return
+
+			if "diff" in args:
+				# check if before and after state file exists
+				if os.path.exists(thisstatefilebefore) and os.path.exists(thisstatefileafter):
+					# read contents from both states into dict
+					dbg.log("[+] Reading 'before' state from %s" % thisstatefilebefore)
+					beforestate = readPickleDict(thisstatefilebefore)
+					dbg.log("[+] Reading 'after' state from %s" % thisstatefileafter)
+					afterstate = readPickleDict(thisstatefileafter)
+					# compare
+					dbg.log("[+] Diffing heap states...")
+
+				else:
+					if not os.path.exists(thisstatefilebefore):
+						dbg.log("[-] Oops, unable to find 'before' state file %s" % thisstatefilebefore)
+					if not os.path.exists(thisstatefileafter):
+						dbg.log("[-] Oops, unable to find 'after' state file %s" % thisstatefileafter)
+				return
+
+			elif "before" in args:
+				thisstatefilebefore = statefilebefore.reset(showheader=False)
+				dbg.log("[+] Enumerating current heap layout, please wait...")
+				currentstate = getCurrentHeapState()
+				dbg.log("[+] Saving current heap layout to 'before' heap state file %s" % thisstatefilebefore)
+				# save dict to file
+				try:
+					writePickleDict(thisstatefilebefore, currentstate)
+					dbg.log("[+] Done")
+				except:
+					dbg.log("[-] Error while saving current state to file")
+				return
+
+			elif "after" in args:
+				thisstatefileafter = statefileafter.reset(showheader=False)
+				dbg.log("[+] Enumerating current heap layout, please wait...")
+				currentstate = getCurrentHeapState()
+				dbg.log("[+] Saving current heap layout to 'after' heap state file %s" % thisstatefileafter)
+				try:
+					writePickleDict(thisstatefileafter, currentstate)
+					dbg.log("[+] Done")
+				except:
+					dbg.log("[-] Error while saving current state to file")				
+				return			
+
+			return
+
+
 		def procFlow(args):
 
 			srplist = []
 			endlist = []
 			cregs = []
 			cregsc = []
+			avoidlist = []
 			endloc = 0
 			rellist = {}
 			funcnamecache = {}
@@ -16528,7 +16885,18 @@ def main(args):
 					try:
 						callskip = int(args["cs"])
 					except:
-						pass				
+						pass
+			if "avoid" in args:
+				if type(args["avoid"]).__name__.lower() != "bool":
+					try:
+						avoidl = args["avoid"].replace("'","").replace('"',"").replace(" ","").split(",")
+						for aa in avoidl:
+							a,aok = getAddyArg(aa)
+							if aok:
+								if not a in avoidlist:
+									avoidlist.append(a)
+					except:
+						pass		
 
 			if "cr" in args:
 				if type(args["cr"]).__name__.lower() != "bool":
@@ -16586,6 +16954,10 @@ def main(args):
 
 			dbg.log("[+] Max nr of instructions per branch: %d" % maxinstr)
 			dbg.log("[+] Maximum CALL level: %d" % maxcalllevel)
+			if len(avoidlist) > 0:
+				dbg.log("[+] Only showing flows that don't contains these pointer(s):")
+				for a in avoidlist:
+					dbg.log("    0x%08x" % a)
 			if callskip > 0:
 				dbg.log("[+] Skipping details of the first %d child functions" % callskip)
 			if eaddy > 0:
@@ -16731,127 +17103,135 @@ def main(args):
 						dbg.log("    > Skipping duplicate path from 0x%08x to 0x%08x" % (addy,endaddy))
 					else:
 						processedresults.append(p)
+						skipthislist = False
 						logl = "Path from 0x%08x to 0x%08x (%d instructions) :" % (addy,endaddy,len(p))
-						logfile.write("\n",thislog)
-						logfile.write(logl,thislog)
-						logfile.write("-" * len(logl),thislog)
-						dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
-						cregsb = []
-						for c in cregs:
-							cregsb.append(c)
-						cregscb = []
-						for c in cregsc:
-							cregscb.append(c)
+						if len(avoidlist) > 0:
+							for a in avoidlist:
+								if a in p:
+									dbg.log("    > Skipping path, contains 0x%08x (which should be avoided)"%a)
+									skipthislist = True
+									break
+						if not skipthislist:
+							logfile.write("\n",thislog)
+							logfile.write(logl,thislog)
+							logfile.write("-" * len(logl),thislog)
+							dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
+							cregsb = []
+							for c in cregs:
+								cregsb.append(c)
+							cregscb = []
+							for c in cregsc:
+								cregscb.append(c)
 
-						prevfname = ""
-						fname = ""
-						foffset = ""
-						previnstruction = ""
-						for thisaddy in p:
-							if showfuncposition:
-								if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
-									if not thisaddy in funcnamecache:
-										fname,foffset = getFunctionName(thisaddy)
-										funcnamecache[thisaddy] = [fname,foffset]
-									else:
-										fname = funcnamecache[thisaddy][0]
-										foffset = funcnamecache[thisaddy][1]
-									if fname != prevfname:
-										prevfname = fname
-										locname = fname
-										if foffset != "":
-											locname += "+%s" % foffset
-										logfile.write("#--- %s ---" % locname,thislog)
-									#dbg.log("%s" % locname)
+							prevfname = ""
+							fname = ""
+							foffset = ""
+							previnstruction = ""
+							for thisaddy in p:
+								if showfuncposition:
+									if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
+										if not thisaddy in funcnamecache:
+											fname,foffset = getFunctionName(thisaddy)
+											funcnamecache[thisaddy] = [fname,foffset]
+										else:
+											fname = funcnamecache[thisaddy][0]
+											foffset = funcnamecache[thisaddy][1]
+										if fname != prevfname:
+											prevfname = fname
+											locname = fname
+											if foffset != "":
+												locname += "+%s" % foffset
+											logfile.write("#--- %s ---" % locname,thislog)
+										#dbg.log("%s" % locname)
 
-							thisopcode = dbg.disasm(thisaddy)
-							instruction = thisopcode.getDisasm()
-							previnstruction = instruction
-							clist = []
-							clistc = []
-							for c in cregsb:
-								combins = []
-								combins.append(" %s" % c)
-								combins.append("[%s" % c)
-								combins.append(",%s" % c)
-								combins.append("%s]" % c)
-								combins.append("%s-" % c)
-								combins.append("%s+" % c)
-								combins.append("-%s" % c)
-								combins.append("+%s" % c)
-								for comb in combins:
-									if comb in instruction and not c in clist:
-										clist.append(c)
+								thisopcode = dbg.disasm(thisaddy)
+								instruction = thisopcode.getDisasm()
+								previnstruction = instruction
+								clist = []
+								clistc = []
+								for c in cregsb:
+									combins = []
+									combins.append(" %s" % c)
+									combins.append("[%s" % c)
+									combins.append(",%s" % c)
+									combins.append("%s]" % c)
+									combins.append("%s-" % c)
+									combins.append("%s+" % c)
+									combins.append("-%s" % c)
+									combins.append("+%s" % c)
+									for comb in combins:
+										if comb in instruction and not c in clist:
+											clist.append(c)
 
-							for c in cregscb:
-								combins = []
-								combins.append(" %s" % c)
-								combins.append("[%s" % c)
-								combins.append(",%s" % c)
-								combins.append("%s]" % c)
-								combins.append("%s-" % c)
-								combins.append("%s+" % c)
-								combins.append("-%s" % c)
-								combins.append("+%s" % c)
-								for comb in combins:
-									if comb in instruction and not c in clistc:
-										clistc.append(c)
-							
-							rsrc,rdst = getSourceDest(instruction)
+								for c in cregscb:
+									combins = []
+									combins.append(" %s" % c)
+									combins.append("[%s" % c)
+									combins.append(",%s" % c)
+									combins.append("%s]" % c)
+									combins.append("%s-" % c)
+									combins.append("%s+" % c)
+									combins.append("-%s" % c)
+									combins.append("+%s" % c)
+									for comb in combins:
+										if comb in instruction and not c in clistc:
+											clistc.append(c)
+								
+								rsrc,rdst = getSourceDest(instruction)
 
-							csource = False
-							cdest = False
+								csource = False
+								cdest = False
 
-							if rsrc in cregsb or rsrc in cregscb:
-								csource = True
-							if rdst in cregsb or rdst in cregscb:
-								cdest = True
+								if rsrc in cregsb or rsrc in cregscb:
+									csource = True
+								if rdst in cregsb or rdst in cregscb:
+									cdest = True
 
-							destructregs = ["MOV","XOR","OR"]
-							writeregs = ["INC","DEC","AND"]
-
-
-							ocregsb = copy.copy(cregsb)
-
-							if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
-								for d in destructregs:
-									if instruction.startswith(d):
-										sourcefound = False
-										sourcereg = ""
-										destfound = False
-										destreg = ""
-
-										for s in clist:
-											for sr in rsrc:
-												if s in sr and not sourcefound:
-													sourcefound = True
-													sourcereg = s
-											for sr in rdst:
-												if s in sr and not destfound:
-													destfound = True
-													destreg = s
-
-										if sourcefound and destfound:
-											if not destreg in cregsb:
-												cregsb.append(destreg)
-										if destfound and not sourcefound:
-											sregs = getSmallerRegs(destreg)
-											if destreg in cregsb:
-												cregsb.remove(destreg)
-											for s in sregs:
-												if s in cregsb:
-													cregsb.remove(s)
-										break
-							#else:
-								#dbg.log("    Control: %s" % ocregsb)
+								destructregs = ["MOV","XOR","OR"]
+								writeregs = ["INC","DEC","AND"]
 
 
-							logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
-							
-							#if len(cregs) > 0 or len(cregsb) > 0:
-							#	if cmp(ocregsb,cregsb) == -1:
-							#		dbg.log("    Before: %s" % ocregsb)
-							#		dbg.log("    After : %s" % cregsb)
+								ocregsb = copy.copy(cregsb)
+
+								if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
+									for d in destructregs:
+										if instruction.startswith(d):
+											sourcefound = False
+											sourcereg = ""
+											destfound = False
+											destreg = ""
+
+											for s in clist:
+												for sr in rsrc:
+													if s in sr and not sourcefound:
+														sourcefound = True
+														sourcereg = s
+												for sr in rdst:
+													if s in sr and not destfound:
+														destfound = True
+														destreg = s
+
+											if sourcefound and destfound:
+												if not destreg in cregsb:
+													cregsb.append(destreg)
+											if destfound and not sourcefound:
+												sregs = getSmallerRegs(destreg)
+												if destreg in cregsb:
+													cregsb.remove(destreg)
+												for s in sregs:
+													if s in cregsb:
+														cregsb.remove(s)
+											break
+								#else:
+									#dbg.log("    Control: %s" % ocregsb)
+
+
+								logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
+								
+								#if len(cregs) > 0 or len(cregsb) > 0:
+								#	if cmp(ocregsb,cregsb) == -1:
+								#		dbg.log("    Before: %s" % ocregsb)
+								#		dbg.log("    After : %s" % cregsb)
 			return
 
 
@@ -16979,6 +17359,9 @@ def main(args):
 
 			if "CALL" in instruction.upper():
 				dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%08x):\\",esp;.echo;dds esp L 0x4;'
+
+			if instruction.upper().startswith("RET"):
+				dmpsyntax += '.echo;.printf \\"EAX: 0x%08x, Ret To: 0x%08x, Arg1: 0x%08x, Arg2: 0x%08x, Arg3: 0x%08x, Arg4: 0x%08x\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
 
 			bpsyntax = locsyntax + ' ".echo ---------------;u eip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
 			filename = "logbps.txt"
@@ -17286,9 +17669,9 @@ Optional parameters :
     -ptronly : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
 
 		patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
+in ascii, hex and unescape() javascript format
 Mandatory argument : size (numberic value)
 Optional arguments :
-    -js : output pattern in unicode escaped javascript format
     -extended : extend the 3rd characterset (numbers) with punctuation marks etc
     -c1 <chars> : set the first charset to this string of characters
     -c2 <chars> : set the second charset to this string of characters
@@ -17363,7 +17746,8 @@ Optional argument :
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
                    by looking at the first 8 bytes.
-    -s : skip locations that belong to a module"""
+    -s : skip locations that belong to a module
+    -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically"""
 				   
 		offsetUsage = """Calculate the number of bytes between two addresses. You can use 
 registers instead of addresses. 
@@ -17645,11 +18029,27 @@ Optional arguments:
 
 		flowUsage = """Simulates execution flows from current location (EIP), tries all conditional jump combinations
 Optional arguments:
-    -e <address>      : Show execution flows that will reach specified address
-    -n <nr>           : Max nr of instructions, default: 60
-    -cl <nr>          : Max level of CALL to follow in detail, default: 3
-    -cs <nr>          : Don't show details of first <nr> CALL/child functions. default: 0
-    -func             : Show function names (slows down process)."""
+    -e <address>                 : Show execution flows that will reach specified address
+    -avoid <address,address,...> : Only show paths that don't contain any of the pointers to avoid
+    -n <nr>                      : Max nr of instructions, default: 60
+    -cl <nr>                     : Max level of CALL to follow in detail, default: 3
+    -cs <nr>                     : Don't show details of first <nr> CALL/child functions. default: 0
+    -func                        : Show function names (slows down process)."""
+
+		evalUsage = """Evaluates an expression
+Arguments:
+    <the expression to evaluate>
+
+Accepted syntax includes: 
+    hex values, decimal values (prefixed with 0n), registers, 
+    module names, 'heap' ( = address of default process heap),
+    module!functionname
+    simple math operations"""
+
+		diffheapUsage = """Compare current heap layout with previously saved state
+Arguments:
+    -save     : save current state to disk 
+    -diff     : compare current state with previously saved state""" 
 
 
 		commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
@@ -17704,6 +18104,7 @@ Optional arguments:
 			commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc")
 			commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp")
 			commands["flow"]		= MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
+			#commands["diffheap"]	= MnCommand("diffheap", "Compare current heap layout with previously saved state", diffheapUsage, procDiffHeap, "dh")
 		commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
 		commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain")
 		commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd")
@@ -17713,15 +18114,27 @@ Optional arguments:
 		commands["teb"]				= MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb")
 		commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str")
 		commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp")
+		commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval")
 		# get the options
 		opts = {}
 		last = ""
 		arguments = []
+		argcopy = copy.copy(args)
+
+		aline = " ".join(a for a in argcopy)
+		if __DEBUGGERAPP__ == "WinDBG":
+			aline = "!py " + aline
+		else:
+			aline = "!mona " + aline
+		dbg.log("[+] Command used:")
+		dbg.log("%s" % aline)	
+
 
 		# in case we're not using Immunity
 		if "-showargs" in args:
-			dbg.log("-" * 40)
+			dbg.log("-" * 50)
 			dbg.log("args: %s" % args)
+
 		if len(args) > 0:
 			if args[0].lower().startswith("mona") or args[0].lower().endswith("mona") or args[0].lower().endswith("mona.py"):
 				args.pop(0)
@@ -17757,7 +18170,9 @@ Optional arguments:
 		command = args[0]
 		if "-showargs" in args:
 			dbg.log("command: %s" % command)
-			dbg.log("-" * 40)
+			dbg.log("-" * 50)
+			args.remove("-showargs")
+			arguments.remove("-showargs")			
 		
 		# ----- execute the chosen command ----- #
 		if command in commands:
@@ -17781,7 +18196,7 @@ Optional arguments:
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		dbg.logLines("[+] This mona.py action took %s\n" % str(delta))
+		dbg.log("[+] This mona.py action took %s" % str(delta))	
 		dbg.setStatusBar("Done")
 				
 	except:
@@ -17815,9 +18230,10 @@ if __name__ == "__main__":
 	if __DEBUGGERAPP__ == "WinDBG":
 		dbglib.clearvars()
 	try:
-		allvars = [var for var in globals() if var[0] != "_"]
-		for var in allvars:
-			del globals()[var]
+	#	allvars = [var for var in globals() if var[0] != "_"]
+	#	for var in allvars:
+	#		del globals()[var]
+		resetGlobals()
 		dbg = None
 	except:
 		pass
